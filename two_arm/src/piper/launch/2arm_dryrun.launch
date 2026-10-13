@@ -1,0 +1,44 @@
+<launch>
+  <!-- Dry-run environment for hggd_endpose_dual_arm.py, NO hardware needed:
+       robot_description + robot_state_publisher + fake piper SDK node per arm.
+       CAN ports, real SDK, camera driver and HGGD model are all replaced by:
+         /{arm_ns}/joint_states_single   published by fake_piper_node (all zero)
+         /{arm_ns}/gripper_srv           fake service, logs calls
+         /hggd_pose_raw                  published by fake_hggd_pose.py by hand
+       Then: rosrun piper hggd_endpose_dual_arm.py _arm_ns:=arm1
+  -->
+  <arg name="rviz" default="false"/>
+
+  <group ns="arm1">
+    <param name="robot_description"
+        command="$(find xacro)/xacro $(find piper)/urdf/arm_with_camera.urdf.xacro" />
+    <node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher" output="screen">
+      <remap from="joint_states" to="joint_states_single"/>
+      <param name="tf_prefix" value="arm1"/>
+    </node>
+    <node name="fake_piper_node" pkg="piper" type="fake_piper_node.py" output="screen">
+      <param name="arm_ns" value="arm1"/>
+    </node>
+  </group>
+
+  <group ns="arm2">
+    <param name="robot_description"
+        command="$(find xacro)/xacro $(find piper)/urdf/arm_with_camera.urdf.xacro" />
+    <node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher" output="screen">
+      <remap from="joint_states" to="joint_states_single"/>
+      <param name="tf_prefix" value="arm2"/>
+    </node>
+    <node name="fake_piper_node" pkg="piper" type="fake_piper_node.py" output="screen">
+      <param name="arm_ns" value="arm2"/>
+    </node>
+  </group>
+
+  <!-- World base frame, same as 2arm_camera_rviz.launch -->
+  <node pkg="tf2_ros" type="static_transform_publisher" name="world_to_arm1_base"
+        args="0 0 0 0 0 0 world arm1/arm_base" />
+  <node pkg="tf2_ros" type="static_transform_publisher" name="world_to_arm2_base"
+        args="0 -0.4 0 0 0 1.5708 world arm2/arm_base" />
+
+  <arg name="rviz_config" default="$(find piper_description)/rviz/arm_camera.rviz"/>
+  <node if="$(arg rviz)" name="rviz" pkg="rviz" type="rviz" args="-d $(arg rviz_config)" />
+</launch>

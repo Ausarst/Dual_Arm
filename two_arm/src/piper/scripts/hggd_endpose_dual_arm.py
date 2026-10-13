@@ -46,9 +46,12 @@ from piper_msgs.msg import PosCmd
 
 class HGGDCallback:
     def __init__(self):
+        # init first: CLI _arm_ns:=x is uploaded to the param server by init_node,
+        # launch <param> is written there beforehand, so both paths converge
+        # into the same get_param call below
+        rospy.init_node("hggd_pose_process", anonymous=True)
         # which arm this instance controls, all topics / frames / services prefixed by it
         self.arm_ns = rospy.get_param("~arm_ns", "arm1")
-        rospy.init_node("hggd_pose_process_%s" % self.arm_ns)
 
         # camera frame the HGGD pose defined in:
         # default use the URDF clone frame published by robot_state_publisher (on /tf_static),
