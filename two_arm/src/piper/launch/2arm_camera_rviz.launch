@@ -1,9 +1,13 @@
 <launch>
+  <!-- CAN port of each arm, must match can_activate.sh binding (usb address) -->
+  <arg name="arm1_can_port" default="can0"/>
+  <arg name="arm2_can_port" default="can1"/>
+
   <!-- Arm1 -->
   <group ns="arm1">
     <!-- Arm initial -->
     <include file="$(find piper)/launch/all_start_multiple_piper.launch">
-      <arg name="can_port" value="can0"/>
+      <arg name="can_port" value="$(arg arm1_can_port)"/>
       <arg name="auto_enable" value="true"/>
       <arg name="gripper_val_mutiple" value="1"/>
       <arg name="girpper_exist" value="true"/>
@@ -26,7 +30,7 @@
   <!-- Arm2 -->
   <group ns="arm2">
     <include file="$(find piper)/launch/all_start_multiple_piper.launch">
-      <arg name="can_port" value="can1"/>
+      <arg name="can_port" value="$(arg arm2_can_port)"/>
       <arg name="auto_enable" value="true"/>
       <arg name="gripper_val_mutiple" value="1"/>
       <arg name="girpper_exist" value="true"/>

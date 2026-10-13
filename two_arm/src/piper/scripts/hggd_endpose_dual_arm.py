@@ -1,22 +1,28 @@
-""" /grasp_pose
-    def pub_grasp_pose(self, pred_gg):
-        self.pred_gg = pred_gg
-        grasps = [] 
-        for g in self.pred_gg: 
-            grasps.append({ 
-                "score": float(g.score), 
-                "width": float(g.width), 
-                "height": float(g.height), 
-                "depth": float(g.depth), 
-                "translation": g.translation.tolist(), 
-                "rotation": g.rotation.tolist() }) 
-        self.pub.publish(json.dumps(grasps)) 
-"""
+""" Dual arm grasp pose process & execution (per arm instance)
 
-""" todo:
-1. Subscribe raw pose from HGGD
-2. Transform pose to PoseStamped and translate them from camera base to arm base by TF
-3. Publish
+    Usage:
+        rosrun piper hggd_endpose_dual_arm.py _arm_ns:=arm1
+        (arm2 same with _arm_ns:=arm2, camera currently mounted on arm1)
+
+    Subscribe:
+        /hggd_pose_raw                     HGGD grasp pose json, in camera optical frame
+        /{arm_ns}/joint_states_single      joint feedback from piper SDK
+
+    Publish:
+        /{arm_ns}/joint_states_hggd        joint states + virtual gripper joints for rviz
+        /{arm_ns}/pos_cmd                  cartesian pose cmd to piper SDK (x/y/z m, rpy rad)
+
+    TF broadcast (all frames prefixed by arm_ns, 10Hz timer republish,
+                  so relay frames never expire and target switch refreshes automatically):
+        {arm_ns}/grasp_base_visual         expected grasp pose in arm base,
+                                           same name as URDF fixed frame to drive the ghost gripper STL
+        {arm_ns}/visual_backward           relay frame, retreat along grasp approach (-x) axis
+
+    Service:
+        /{arm_ns}/gripper_srv              gripper open width, unit: meter [0, 0.07]
+
+    Pipeline: numeric pose composition (no TF round trip for execution),
+              each action confirmed by keyboard before executing (input_signal).
 """
 
 import rospy
@@ -28,7 +34,6 @@ from geometry_msgs.msg import PoseStamped
 from std_msgs.msg import String
 from tf import transformations
 import json
-# from visualization_msgs.msg import Marker
 from sensor_msgs.msg import JointState
 
 from typing import Union
@@ -37,38 +42,68 @@ from scipy.spatial.transform import Rotation as SR
 
 from piper_msgs.srv import Gripper, GripperRequest
 from piper_msgs.msg import PosCmd
-gripper_service = None
+
 
 class HGGDCallback:
     def __init__(self):
-        rospy.init_node("hggd_pose_process")
+        # which arm this instance controls, all topics / frames / services prefixed by it
+        self.arm_ns = rospy.get_param("~arm_ns", "arm1")
+        rospy.init_node("hggd_pose_process_%s" % self.arm_ns)
+
+        # camera frame the HGGD pose defined in:
+        # default use the URDF clone frame published by robot_state_publisher (on /tf_static),
+        # switch to driver frame (camera_color_optical_frame) once link6->camera_link bridge TF added
+        self.cam_frame = rospy.get_param(
+            "~cam_frame", "%s/camera_color_optical_frame" % self.arm_ns)
+        self.arm_base_frame = "%s/arm_base" % self.arm_ns
+
         rospy.Subscriber("/hggd_pose_raw", String, self.grasp_pose_cb, queue_size=10)
-        rospy.Subscriber("/joint_states_single", JointState, self.visual_grasp_pub)
-        self.joint_pub = rospy.Publisher("/joint_states_hggd", JointState, queue_size=10)
+        rospy.Subscriber("/%s/joint_states_single" % self.arm_ns,
+                         JointState, self.visual_grasp_pub)
+        self.joint_pub = rospy.Publisher(
+            "/%s/joint_states_hggd" % self.arm_ns, JointState, queue_size=10)
+
+        # arm pose to piper
+        self.arm_pose_pub = rospy.Publisher(
+            "/%s/pos_cmd" % self.arm_ns, PosCmd, queue_size=1)
 
         # gripper close/open service
-        rospy.wait_for_service('/gripper_srv')
+        rospy.wait_for_service("/%s/gripper_srv" % self.arm_ns)
+        self.gripper_service = rospy.ServiceProxy(
+            "/%s/gripper_srv" % self.arm_ns, Gripper)
 
         # TF trans
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
         self.tf_broadcaster = tf2_ros.TransformBroadcaster()
 
-        self.width = 0
+        self.width = 0.0
+        self.pose_armbase = None  # PoseStamped of expected grasp in arm base
+        self.pose_ready = False   # set by hggd callback, consumed by main loop pipeline
 
-        # arm pose to piper
-        self.arm_pose_pub = rospy.Publisher("/pos_cmd", PosCmd, queue_size=1)
+        # relay distance from grasp pose along approach axis
+        self.relay_backdist = rospy.get_param("~relay_backdist", 0.10)
+
+        # conservative workspace check bounds in arm base frame (m), tune per piper spec
+        self.ws_r_min = rospy.get_param("~ws_r_min", 0.10)
+        self.ws_r_max = rospy.get_param("~ws_r_max", 0.60)
+        self.ws_z_min = rospy.get_param("~ws_z_min", 0.00)
+        self.ws_z_max = rospy.get_param("~ws_z_max", 0.50)
+
+        # republish grasp & relay frames at 10Hz: keep TF cache fresh for rviz,
+        # and new HGGD pose is picked up automatically on next tick
+        self.tf_timer = rospy.Timer(rospy.Duration(0.1), self.broadcast_grasp_frames)
 
 ### HGGD pose process
     def visual_grasp_pub(self, msg):
         """
         Discribe:
-            Add visual_joint7&8 to jointstate and publish to /joint_states_hggd, then robotstatepublsher publish tf tree, for visualize expect gripper pose later
-        
+            Add visual_joint7&8 to jointstate and publish to /{arm_ns}/joint_states_hggd,
+            then robotstatepublsher publish tf tree, for visualize expect gripper pose later
+
         Args:
-            msg: /joint_states_single, realtime 6 joint angle from piper SDK
+            msg: /{arm_ns}/joint_states_single, realtime 6 joint angle from piper SDK
         """
-        # get joint_states_single and add visual joint
         merged = JointState()
         merged.header.stamp = rospy.Time.now()
         merged.name = msg.name + ["visual_joint7", "visual_joint8"]
@@ -80,20 +115,19 @@ class HGGDCallback:
     def grasp_pose_cb(self, msg: String):
         """
         Discribe:
-            Subscribe expect gripper grasp pose from HGGD, transform form camera optical frame to arm base and format to PoseStamped
-        
+            Subscribe expect gripper grasp pose from HGGD, pick the best score one,
+            transform from camera optical frame to arm base frame and store for pipeline
+
         Args:
             msg: /hggd_pose_raw, translation and rotation json data from HGGD
-
-        Return:
-            PoseStamped pose of expect grasp
         """
-        self.pose_cb = json.loads(msg.data) # self.pose_cb for get score and width later
+        grasps = json.loads(msg.data)
+        if not grasps:
+            rospy.logwarn("HGGD returned empty grasp list, skip")
+            return
 
-        # try the largest score one
-        best_grasp = max(self.pose_cb, key=lambda g: g["score"])
+        best_grasp = max(grasps, key=lambda g: g["score"])
 
-        # get translation, rotation and orientation 
         tx, ty, tz = best_grasp["translation"]
         r = best_grasp["rotation"]
         quat = transformations.quaternion_from_matrix([
@@ -103,30 +137,33 @@ class HGGDCallback:
             [      0,       0,       0, 1]
         ])
         self.width = best_grasp["width"]
-        print("width:",self.width)
+        rospy.loginfo("grasp score: %.3f width: %.4f", best_grasp["score"], self.width)
 
-        # trans to arm base as posestamped
-        self.pose = PoseStamped()
-        self.pose.header.stamp = rospy.Time.now()
-        self.pose.header.frame_id = "camera_color_optical_frame"
-        self.pose.pose.position.x = tx
-        self.pose.pose.position.y = ty
-        self.pose.pose.position.z = tz
-        self.pose.pose.orientation.x = quat[0]
-        self.pose.pose.orientation.y = quat[1]
-        self.pose.pose.orientation.z = quat[2]
-        self.pose.pose.orientation.w = quat[3]
+        pose = PoseStamped()
+        pose.header.stamp = rospy.Time.now()
+        pose.header.frame_id = self.cam_frame
+        pose.pose.position.x = tx
+        pose.pose.position.y = ty
+        pose.pose.position.z = tz
+        pose.pose.orientation.x = quat[0]
+        pose.pose.orientation.y = quat[1]
+        pose.pose.orientation.z = quat[2]
+        pose.pose.orientation.w = quat[3]
 
-        self.pose_armbase = self.tf_buffer.transform(self.pose, "arm_base", rospy.Duration(1.0))
-        return self.pose_armbase
+        try:
+            self.pose_armbase = self.tf_buffer.transform(
+                pose, self.arm_base_frame, rospy.Duration(1.0))
+        except tf2_ros.TransformException as e:
+            rospy.logerr("transform %s -> %s failed: %s", self.cam_frame, self.arm_base_frame, e)
+            return
+        self.pose_ready = True
 ###
 
-
-### publish desire TFs (grasp pos + assist pos)
+### TF broadcast (timer driven, for rviz visualization only)
     def posrot_trans(
-            self, 
-            father_farme: str, 
-            child_frame: str, 
+            self,
+            father_farme: str,
+            child_frame: str,
             translation: Union[np.ndarray, list],
             orientation: Union[np.ndarray, list]
             ):
@@ -159,68 +196,89 @@ class HGGDCallback:
         t.transform.rotation.y = q[1]
         t.transform.rotation.z = q[2]
         t.transform.rotation.w = q[3]
-        
+
         return t
-    # creat relative frame according grasp_base_visual frame
-    def grasp_frames_transform(self, backdistance: float) -> None:
+
+    def broadcast_grasp_frames(self, event=None):
         """
         Discribe:
-            Create expect grasp pose frame grasp_base_visual and static assist grasp frames according grasp_base_visual
-
-        Args:
-            backdistance: distance from near to object to actual object(ready to grasp) 
+            Timer callback, publish grasp_base_visual (same name as URDF fixed frame,
+            so ghost gripper STL follows) and relay frames (visual_backward etc.)
+            at 10Hz. Execution does not depend on these, they are for rviz only.
         """
-        d = backdistance
+        if self.pose_armbase is None:
+            return
+        p = self.pose_armbase.pose
 
-        # send tf to grasp base visual, when robot state publisher launched, the link call "grasp base visual" will be correlated
+        # grasp target frame, same frame name as URDF link so rviz ghost gripper moves
         visual_grasp = geometry_msgs.msg.TransformStamped()
         visual_grasp.header.stamp = rospy.Time.now()
-        visual_grasp.header.frame_id = "arm_base"
-        visual_grasp.child_frame_id = "grasp_base_visual"
-        visual_grasp.transform.translation.x = self.pose_armbase.pose.position.x
-        visual_grasp.transform.translation.y = self.pose_armbase.pose.position.y
-        visual_grasp.transform.translation.z = self.pose_armbase.pose.position.z
-        visual_grasp.transform.rotation.x = self.pose_armbase.pose.orientation.x
-        visual_grasp.transform.rotation.y = self.pose_armbase.pose.orientation.y
-        visual_grasp.transform.rotation.z = self.pose_armbase.pose.orientation.z
-        visual_grasp.transform.rotation.w = self.pose_armbase.pose.orientation.w
-        self.tf_broadcaster.sendTransform(visual_grasp)
+        visual_grasp.header.frame_id = self.arm_base_frame
+        visual_grasp.child_frame_id = "%s/grasp_base_visual" % self.arm_ns
+        visual_grasp.transform.translation.x = p.position.x
+        visual_grasp.transform.translation.y = p.position.y
+        visual_grasp.transform.translation.z = p.position.z
+        visual_grasp.transform.rotation.x = p.orientation.x
+        visual_grasp.transform.rotation.y = p.orientation.y
+        visual_grasp.transform.rotation.z = p.orientation.z
+        visual_grasp.transform.rotation.w = p.orientation.w
 
-        rospy.sleep(0.2)
-
-        # quat to roatiton, then extract x axis cosine as gripper orientation
+        # relay frame: retreat along grasp approach (-x) axis, for approach start / retreat
         rotation = SR.from_quat(
-            self.pose_armbase.pose.orientation.x,
-            self.pose_armbase.pose.orientation.y,
-            self.pose_armbase.pose.orientation.z,
-            self.pose_armbase.pose.orientation.w,
+            [p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w]
         ).as_matrix()
-        vect = rotation[:, 0]
-
-        # build grasp frame
-
+        approach = rotation[:, 0]
+        d = self.relay_backdist
         trans_origin2backward = self.posrot_trans(
-            father_farme = "grasp_base_visual",
-            child_frame = "visual_backward",
-            translation = [-d*vect[0], -d*vect[1], -d*vect[2]],
-            orientation = [0.0, 0.0, 0.0],
+            father_farme="%s/grasp_base_visual" % self.arm_ns,
+            child_frame="%s/visual_backward" % self.arm_ns,
+            translation=[-d*approach[0], -d*approach[1], -d*approach[2]],
+            orientation=[0.0, 0.0, 0.0],
         )
 
-        self.tf_broadcaster.sendTransform(
-            [
-                trans_origin2backward,
-            ]
-        )
-        rospy.sleep(0.2)
+        self.tf_broadcaster.sendTransform([visual_grasp, trans_origin2backward])
 ###
 
-### target pos
+### target pos (numeric composition, execution never blocked by TF)
+    def grasp_poscmd(self, backdist: float = 0.0) -> list:
+        """
+        Discribe:
+            Compose pos_cmd (x y z roll pitch yaw, m & rad) of the grasp pose moved
+            backdist along the approach (-x) axis, purely numeric from pose_armbase
+
+        Args:
+            backdist: distance to retreat along approach axis, 0 means grasp pose itself
+        """
+        p = self.pose_armbase.pose
+        quat = [p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w]
+        rotation = SR.from_quat(quat).as_matrix()
+        approach = rotation[:, 0]
+        pos = [
+            p.position.x - backdist*approach[0],
+            p.position.y - backdist*approach[1],
+            p.position.z - backdist*approach[2],
+        ]
+        euler = transformations.euler_from_quaternion(quat)
+        return pos + list(euler)
+
+    def check_workspace(self, name: str, pos_cmd: list) -> bool:
+        """
+        Discribe:
+            Simple sanity check in arm base frame before sending to the real arm,
+            reject the action when target out of conservative workspace bounds
+        """
+        r = np.sqrt(pos_cmd[0]**2 + pos_cmd[1]**2)
+        ok = (self.ws_r_min <= r <= self.ws_r_max) and (self.ws_z_min <= pos_cmd[2] <= self.ws_z_max)
+        if not ok:
+            rospy.logerr("[%s] out of workspace: r=%.3f z=%.3f (bounds r[%.2f,%.2f] z[%.2f,%.2f]), abort",
+                         name, r, pos_cmd[2], self.ws_r_min, self.ws_r_max, self.ws_z_min, self.ws_z_max)
+        return ok
+
     def fetch_tf_posequat(self, target_frame: str, source_frame: str, wait_block: bool = True):
         """
         Discribe:
-            Get transformation from source_frame to target_frame, 
-            for pipline to execution, send gripper target pose one by one
-        
+            Debug helper: get transformation from source_frame to target_frame by TF
+
         Args:
             target_frame: the name of the target frame
             source_frame: the name of the source frame
@@ -249,8 +307,9 @@ class HGGDCallback:
     ):
         """
         Discribe:
-            Get Transformation from source_frame to target_frame, and trans to PosCmd for arm_servo_pose to execute, list translation + euler
-        
+            Debug helper: get transformation from source_frame to target_frame by TF,
+            and trans to PosCmd list for arm_servo_pose to execute, translation + euler
+
         Args:
             target_frame: the name of the target frame
             source_frame: the name of the source frame
@@ -272,15 +331,14 @@ class HGGDCallback:
         pos_cmd = translation + euler
         return pos_cmd
 ###
- 
+
 ### execute pos/gripper
     def arm_servo_pose(self, act_pose: list, repeat=False):
         """
         Discribe:
-            Arm absolute pose publish
-        
-        :param self: 说明
-        :param act_pose: 说明
+            Arm absolute pose publish, x/y/z in m, roll/pitch/yaw in rad
+
+        :param act_pose: [x, y, z, roll, pitch, yaw]
         """
         pos_data = PosCmd()
         pos_data.x = act_pose[0]
@@ -292,42 +350,56 @@ class HGGDCallback:
         pos_data.gripper = -1 # no use
         pos_data.mode1 = 1  # 位置模式
         pos_data.mode2 = 0  # 速度模式
-        self.arm_pose_pub.publish(pos_data) 
+        self.arm_pose_pub.publish(pos_data)
         if repeat:
             rospy.sleep(0.1)
-            self.arm_pose_pub.publish(pos_data)      
-    
+            self.arm_pose_pub.publish(pos_data)
+
     # close/open gripper service from piper
-    def call_gripper_service(gripper_opening, force_effort=2):
+    def call_gripper_service(self, gripper_opening, force_effort=2):
         """
         Discribe:
             Gripper close/open service from arm piper SDK
-        
+
         Args:
             gripper_opening: gripper opening distance, range: 0 - 0.07 m
             force_effort: grasp force, range: 0.5 - 2 N
         """
-        global gripper_service
         try:
             gri_cmd = GripperRequest()
             gri_cmd.gripper_angle = gripper_opening
             gri_cmd.gripper_effort = force_effort
             gri_cmd.set_zero = 0
             gri_cmd.gripper_code = 1
-            response = gripper_service(gri_cmd)
+            response = self.gripper_service(gri_cmd)
             rospy.loginfo("Gripper service called successfully. Response: %s", response)
         except rospy.ServiceException as e:
-            rospy.logerr("Service call failed: %s", e) 
+            rospy.logerr("Service call failed: %s", e)
 ###
 
 ### pipline
     def pipline(self):
-        # pos from tf
-        pose_endposupper = self.fetch_tf_posequat("base", "visual_backward")
-        pose_objgrip = self.fetch_tf_posequat("base", "grasp_base_visual")
+        """
+        Discribe:
+            Grasp pipeline: numeric pose composition + manual step confirm execution.
+            upper(visual_backward) -> open gripper -> grasp pose -> close gripper -> retreat
+        """
+        if self.pose_armbase is None:
+            rospy.logwarn("no grasp pose yet, skip pipeline")
+            return
+
+        d = self.relay_backdist
+        pose_endposupper = self.grasp_poscmd(backdist=d)
+        pose_objgrip = self.grasp_poscmd(backdist=0.0)
+
+        # workspace check before touching the real arm
+        if not (self.check_workspace("upper", pose_endposupper)
+                and self.check_workspace("grip", pose_objgrip)):
+            return
+
         # gripper
         grasp_open = 0.07
-        grasp_close = self.width
+        grasp_close = min(self.width, grasp_open)
         grasp_ready = min(self.width + 0.02, grasp_open)
 
         action_flow = [
@@ -337,27 +409,19 @@ class HGGDCallback:
             {"name": "GRIPPER_CLOSE", "type": "GRASP", "value": grasp_close},
             {"name": "UR_RE_pose_upper", "type": "APOSE", "value": pose_endposupper},
         ]
-        print("Excute action list:", action_flow)
+        rospy.loginfo("Excute action list:")
+        for action in action_flow:
+            rospy.loginfo("  %s %s: %s", action["type"], action["name"], action["value"])
 
-        ex_ret = excute_graspactions(action_flow)
-        if not ex_ret:
-            if not input_signal("## Interrupt Trial [{}]: [COUNT]:enter, [RETURN]:nine ##".format(trial_id)):
-                continue
-        trial_id += 1
-        if input_signal("## Trial [{}]: [SUCCESS]:enter, [FAIL]:nine ##".format(trial_id)):
-            succ_count += 1
+        self.excute_graspactions(action_flow)
 
-    rospy.loginfo("[Pipeline]: Everything done, spinning...")
-    rospy.spin()
-
-
-    def excute_graspactions(action_flow: list, action_prefix: str="test"):
-        """execution information output and execution
+    def excute_graspactions(self, action_flow: list, action_prefix: str="grasp"):
+        """
+        Discribe:
+            Execution information output and execution, each action confirmed by keyboard first
 
         Args:
             action_flow: multiple action list
-            gripper_client: gripper node
-            pose_node: node of robot arm
             action_prefix: description of action type
 
         Returns:
@@ -374,9 +438,9 @@ class HGGDCallback:
             ):
                 return False
             if action["type"] == "GRASP":
-                call_gripper_service(action["value"])
+                self.call_gripper_service(action["value"])
             if action["type"] in ["APOSE", "AJOINT"]:
-                arm_servo_pose(action["value"], repeat=True)
+                self.arm_servo_pose(action["value"], repeat=True)
         return True
 
 ### user
@@ -397,11 +461,14 @@ def input_signal(reminder: str = "Enter to contine", supple_txt: str = "[0:End, 
         exit(0)
     return a != "9"
 
-    
-
-
-
 
 if __name__ == '__main__':
     hggd = HGGDCallback()
-    rospy.spin()
+    rospy.loginfo("[hggd_endpose_dual_arm] controlling arm: %s, camera frame: %s", hggd.arm_ns, hggd.cam_frame)
+    # main thread consumes grasp poses one by one, callbacks run in their own threads
+    rate = rospy.Rate(20)
+    while not rospy.is_shutdown():
+        if hggd.pose_ready:
+            hggd.pose_ready = False
+            hggd.pipline()
+        rate.sleep()
