@@ -1,0 +1,28 @@
+digraph G {
+"camera_link" -> "camera_depth_frame"[label="Broadcaster: /robot_state_publisher\nAverage rate: 10000.000 Hz\nMost recent transform: 0.000 ( 1772789721.688 sec old)\nBuffer length: 0.000 sec\n"];
+"camera_bottom_screw_frame" -> "camera_link"[label="Broadcaster: /robot_state_publisher\nAverage rate: 10000.000 Hz\nMost recent transform: 0.000 ( 1772789721.688 sec old)\nBuffer length: 0.000 sec\n"];
+"camera_depth_frame" -> "camera_depth_optical_frame"[label="Broadcaster: /robot_state_publisher\nAverage rate: 10000.000 Hz\nMost recent transform: 0.000 ( 1772789721.688 sec old)\nBuffer length: 0.000 sec\n"];
+"camera_link" -> "camera_color_frame"[label="Broadcaster: /robot_state_publisher\nAverage rate: 10000.000 Hz\nMost recent transform: 0.000 ( 1772789721.688 sec old)\nBuffer length: 0.000 sec\n"];
+"camera_color_frame" -> "camera_color_optical_frame"[label="Broadcaster: /robot_state_publisher\nAverage rate: 10000.000 Hz\nMost recent transform: 0.000 ( 1772789721.688 sec old)\nBuffer length: 0.000 sec\n"];
+"camera_link" -> "camera_aligned_depth_to_color_frame"[label="Broadcaster: /camera/realsense2_camera_manager\nAverage rate: 10000.000 Hz\nMost recent transform: 0.000 ( 1772789721.688 sec old)\nBuffer length: 0.000 sec\n"];
+"arm_base" -> "grasp_base_visual"[label="Broadcaster: /robot_state_publisher\nAverage rate: 10000.000 Hz\nMost recent transform: 0.000 ( 1772789721.688 sec old)\nBuffer length: 0.000 sec\n"];
+"camera_link" -> "camera_infra1_frame"[label="Broadcaster: /robot_state_publisher\nAverage rate: 10000.000 Hz\nMost recent transform: 0.000 ( 1772789721.688 sec old)\nBuffer length: 0.000 sec\n"];
+"camera_infra1_frame" -> "camera_infra1_optical_frame"[label="Broadcaster: /robot_state_publisher\nAverage rate: 10000.000 Hz\nMost recent transform: 0.000 ( 1772789721.688 sec old)\nBuffer length: 0.000 sec\n"];
+"camera_link" -> "camera_infra2_frame"[label="Broadcaster: /robot_state_publisher\nAverage rate: 10000.000 Hz\nMost recent transform: 0.000 ( 1772789721.688 sec old)\nBuffer length: 0.000 sec\n"];
+"camera_infra2_frame" -> "camera_infra2_optical_frame"[label="Broadcaster: /robot_state_publisher\nAverage rate: 10000.000 Hz\nMost recent transform: 0.000 ( 1772789721.688 sec old)\nBuffer length: 0.000 sec\n"];
+"link6" -> "camera_bottom_screw_frame"[label="Broadcaster: /robot_state_publisher\nAverage rate: 10000.000 Hz\nMost recent transform: 0.000 ( 1772789721.688 sec old)\nBuffer length: 0.000 sec\n"];
+"link5" -> "link6"[label="Broadcaster: /robot_state_publisher\nAverage rate: 44.267 Hz\nMost recent transform: 1772789721.662 ( 0.025 sec old)\nBuffer length: 4.970 sec\n"];
+"camera_link" -> "camera_usb_plug_link"[label="Broadcaster: /robot_state_publisher\nAverage rate: 10000.000 Hz\nMost recent transform: 0.000 ( 1772789721.688 sec old)\nBuffer length: 0.000 sec\n"];
+"link6" -> "gripper_base"[label="Broadcaster: /robot_state_publisher\nAverage rate: 10000.000 Hz\nMost recent transform: 0.000 ( 1772789721.688 sec old)\nBuffer length: 0.000 sec\n"];
+"arm_base" -> "link1"[label="Broadcaster: /robot_state_publisher\nAverage rate: 44.267 Hz\nMost recent transform: 1772789721.662 ( 0.025 sec old)\nBuffer length: 4.970 sec\n"];
+"link1" -> "link2"[label="Broadcaster: /robot_state_publisher\nAverage rate: 44.267 Hz\nMost recent transform: 1772789721.662 ( 0.025 sec old)\nBuffer length: 4.970 sec\n"];
+"link2" -> "link3"[label="Broadcaster: /robot_state_publisher\nAverage rate: 44.267 Hz\nMost recent transform: 1772789721.662 ( 0.025 sec old)\nBuffer length: 4.970 sec\n"];
+"link3" -> "link4"[label="Broadcaster: /robot_state_publisher\nAverage rate: 44.267 Hz\nMost recent transform: 1772789721.662 ( 0.025 sec old)\nBuffer length: 4.970 sec\n"];
+"link4" -> "link5"[label="Broadcaster: /robot_state_publisher\nAverage rate: 44.267 Hz\nMost recent transform: 1772789721.662 ( 0.025 sec old)\nBuffer length: 4.970 sec\n"];
+"gripper_base" -> "link7"[label="Broadcaster: /robot_state_publisher\nAverage rate: 44.267 Hz\nMost recent transform: 1772789721.662 ( 0.025 sec old)\nBuffer length: 4.970 sec\n"];
+"gripper_base" -> "link8"[label="Broadcaster: /robot_state_publisher\nAverage rate: 44.267 Hz\nMost recent transform: 1772789721.662 ( 0.025 sec old)\nBuffer length: 4.970 sec\n"];
+edge [style=invis];
+ subgraph cluster_legend { style=bold; color=black; label ="view_frames Result";
+"Recorded at time: 1772789721.688"[ shape=plaintext ] ;
+ }->"arm_base";
+}

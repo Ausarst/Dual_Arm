@@ -1,0 +1,20 @@
+<launch>
+  <!-- param -->
+  <arg name="can_port" default="can0" />
+  <arg name="auto_enable" default="true" />
+  <arg name="gripper_val_mutiple" default="1" />
+  <arg name="prefix" default="arm1_"/>
+  <!-- single_piper -->
+  <include file="$(find piper)/launch/all_start_single_piper.launch">
+    <arg name="can_port" value="$(arg can_port)" />
+    <arg name="auto_enable" value="$(arg auto_enable)"/>
+    <arg name="gripper_val_mutiple" value="$(arg gripper_val_mutiple)" />
+    <arg name="girpper_exist" value="true" />
+  </include>
+  <!-- URDF -->
+  <include file="$(find piper_description)/launch/piper_with_gripper/display_xacro_nogui.launch"/>
+  <!-- TF tree -->
+  <node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher" output="screen">
+    <remap from="/joint_states" to="/joint_states_single"/>
+  </node>
+</launch>

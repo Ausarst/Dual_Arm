@@ -1,0 +1,26 @@
+<launch>
+  <!-- Activate arm -->
+  <include file="$(find piper)/launch/all_start_single_piper.launch">
+    <arg name="can_port" value="can0"/>
+    <arg name="auto_enable" value="true"/>
+    <arg name="gripper_val_mutiple" value="1"/>
+    <arg name="girpper_exist" value="true"/>
+  </include>
+
+  <!-- Load cam&arm urdf -->
+
+  <param name="robot_description"
+       command="$(find xacro)/xacro $(find piper)/urdf/arm_with_camera.urdf.xacro" />
+
+
+  <!-- TF tree -->
+  <node 
+    name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher" output="screen">
+    <!-- <remap from="/joint_states" to="/joint_states_single"/> -->
+    <remap from="/joint_states" to="/joint_states_hggd"/>
+  </node>
+
+  <!-- RViz -->
+  <arg name="rviz_config" default="$(find piper_description)/rviz/arm_camera.rviz"/>
+  <node name="rviz" pkg="rviz" type="rviz" args="-d $(arg rviz_config)" />
+</launch>

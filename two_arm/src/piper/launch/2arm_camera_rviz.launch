@@ -1,0 +1,63 @@
+<launch>
+  <!-- Arm1 -->
+  <group ns="arm1">
+    <!-- Arm initial -->
+    <include file="$(find piper)/launch/all_start_multiple_piper.launch">
+      <arg name="can_port" value="can0"/>
+      <arg name="auto_enable" value="true"/>
+      <arg name="gripper_val_mutiple" value="1"/>
+      <arg name="girpper_exist" value="true"/>
+    </include>
+
+    <!-- Load cam&arm urdf -->
+    <param name="robot_description"
+        command="$(find xacro)/xacro $(find piper)/urdf/arm_with_camera.urdf.xacro" />
+
+    <!-- TF tree -->
+    <node 
+      name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher" output="screen">
+      <remap from="joint_states" to="joint_states_single"/>
+      <!-- <remap from="/joint_states" to="/joint_states_hggd"/> -->
+      <param name="tf_prefix" value="arm1"/>
+    </node>
+
+  </group>
+
+  <!-- Arm2 -->
+  <group ns="arm2">
+    <include file="$(find piper)/launch/all_start_multiple_piper.launch">
+      <arg name="can_port" value="can1"/>
+      <arg name="auto_enable" value="true"/>
+      <arg name="gripper_val_mutiple" value="1"/>
+      <arg name="girpper_exist" value="true"/>
+    </include>
+
+    <!-- Load cam&arm urdf -->
+    <param name="robot_description"
+        command="$(find xacro)/xacro $(find piper)/urdf/arm_with_camera.urdf.xacro" />
+
+    <!-- TF tree -->
+    <node 
+      name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher" output="screen">
+      <remap from="joint_states" to="joint_states_single"/>
+      <!-- <remap from="/joint_states" to="/joint_states_single"/> -->
+      <!-- <remap from="/joint_states" to="/joint_states_hggd"/> -->
+      <param name="tf_prefix" value="arm2"/>
+    </node>
+
+  </group>
+
+<!-- Be sure that since you remap the joint states in hggd_endpose.py, now you need both subscrib and publish two topics with prefix /arm1 & /arm2 -->
+<!-- Besides, for all script in name space, subscriber also add prefix, that means you need send two control pose to agile_armpose.py -->
+
+
+  <!-- World base frame -->
+  <node pkg="tf2_ros" type="static_transform_publisher" name="world_to_arm1_base"
+        args="0 0 0 0 0 0 world arm1/arm_base" />
+  <node pkg="tf2_ros" type="static_transform_publisher" name="world_to_arm2_base"
+        args="0 -0.4 0 0 0 1.5708 world arm2/arm_base" />
+
+  <!-- RViz -->
+  <arg name="rviz_config" default="$(find piper_description)/rviz/arm_camera.rviz"/>
+  <node name="rviz" pkg="rviz" type="rviz" args="-d $(arg rviz_config)" />
+</launch>
