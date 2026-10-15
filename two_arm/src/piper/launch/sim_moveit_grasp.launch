@@ -1,0 +1,31 @@
+<launch>
+  <!-- 加载 URDF（带相机） -->
+  <param name="robot_description"
+         command="$(find xacro)/xacro $(find piper)/urdf/sim_arm_clean.urdf.xacro" />
+
+  <!-- 世界坐标系到机械臂基座的静态 TF（根据实际底座调整） -->
+  <node pkg="tf2_ros" type="static_transform_publisher" name="world_to_arm_base"
+        args="0 0 0 0 0 0 world arm_base" />
+
+  <!-- 启动 MoveIt move_group（使用新配置） -->
+  <include file="$(find piper_camera_moveit_config)/launch/move_group.launch">
+    <arg name="pipeline" value="ompl" />
+    <arg name="info" value="true" />
+  </include>
+
+  <!-- 将 /joint_states_hggd 转发到 /joint_states 供 MoveIt 使用 -->
+  <node name="joint_states_relay" pkg="topic_tools" type="relay"
+        args="/joint_states_hggd /joint_states" />
+
+  <!-- 机器人状态发布（Rviz 模型） -->
+  <node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher">
+    <remap from="/joint_states" to="/joint_states_hggd"/>
+  </node>
+
+  <!-- 仿真抓取规划节点 -->
+  <node name="grasp_moveit_sim" pkg="piper" type="grasp_moveit_sim.py" output="screen" />
+
+  <!-- Rviz（使用新配置自带的 rviz 文件，或自行指定） -->
+  <node name="rviz" pkg="rviz" type="rviz"
+        args="-d $(find piper_camera_moveit_config)/launch/moveit.rviz" />
+</launch>

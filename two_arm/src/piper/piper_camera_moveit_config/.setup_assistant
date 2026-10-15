@@ -1,0 +1,11 @@
+moveit_setup_assistant_config:
+  URDF:
+    package: piper
+    relative_path: urdf/sim_arm_clean.urdf.xacro
+    xacro_args: ""
+  SRDF:
+    relative_path: config/arm_with_camera.srdf
+  CONFIG:
+    author_name: mc553582
+    author_email: mc55358@um.edu.mo
+    generated_timestamp: 1779694701

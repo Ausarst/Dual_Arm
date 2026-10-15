@@ -1,0 +1,82 @@
+<launch>
+  <!--
+    基于 v3 的观察姿态调试 launch。
+    额外增加 camera_target_debug：
+    - 蓝色箭头：相机 optical +Z 实际视线
+    - 绿色箭头：相机当前位置到目标点的理想视线
+    - 红色球：目标点
+
+    目标：调 observation_joints_list，使蓝色箭头接近绿色箭头。
+  -->
+
+  <arg name="target_x" default="0.35" />
+  <arg name="target_y" default="0.0" />
+  <arg name="target_z" default="0.30" />
+
+  <arg name="auto_observe" default="true" />
+  <arg name="trigger_hggd_after_observe" default="false" />
+  <arg name="add_robot_body" default="false" />
+  <arg name="pose_goal_mode" default="position_only" />
+
+  <param name="robot_description"
+         command="$(find xacro)/xacro $(find piper)/urdf/sim_arm_clean.urdf.xacro" />
+
+  <node pkg="tf2_ros" type="static_transform_publisher" name="world_to_arm_base"
+        args="0 0 0 0 0 0 world arm_base" />
+
+  <include file="$(find piper_with_gripper_moveit)/launch/move_group.launch">
+    <arg name="pipeline" value="ompl" />
+    <arg name="info" value="true" />
+  </include>
+
+  <node name="joint_states_relay" pkg="topic_tools" type="relay"
+        args="/joint_states_hggd /joint_states" />
+
+  <node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher">
+    <remap from="/joint_states" to="/joint_states_hggd"/>
+  </node>
+
+  <node name="camera_target_debug" pkg="piper" type="camera_target_debug.py"
+        output="screen" launch-prefix="bash -c 'sleep 6; $0 $@'">
+    <param name="base_frame" value="arm_base" />
+    <param name="camera_frame" value="camera_color_optical_frame" />
+    <param name="target_x" value="$(arg target_x)" />
+    <param name="target_y" value="$(arg target_y)" />
+    <param name="target_z" value="$(arg target_z)" />
+    <param name="arrow_length" value="0.35" />
+    <param name="log_period" value="1.0" />
+  </node>
+
+  <node name="grasp_moveit_sim_v3" pkg="piper" type="grasp_moveit_sim_v3.py"
+        output="screen" launch-prefix="bash -c 'sleep 5; $0 $@'">
+    <param name="auto_observe" value="$(arg auto_observe)" />
+    <param name="trigger_hggd_after_observe" value="$(arg trigger_hggd_after_observe)" />
+    <param name="add_robot_body" value="$(arg add_robot_body)" />
+    <param name="pose_goal_mode" value="$(arg pose_goal_mode)" />
+
+    <rosparam param="initial_joints">[0.0, 3.142, -2.967, 0.0, 0.0, 0.0]</rosparam>
+
+    <!-- 这里要根据绿色/蓝色箭头继续调。 -->
+    <rosparam param="observation_joints_list">
+      [
+        [0.0, 2.65, -2.35, 0.0, 0.35, 0.0],
+        [0.0, 1.85, -1.55, 0.0, 0.95, 0.0],
+        [0.55, 1.85, -1.55, 0.0, 0.95, 0.0],
+        [-0.55, 1.85, -1.55, 0.0, 0.95, 0.0],
+        [0.0, 1.55, -1.20, 0.0, 1.15, 0.0]
+      ]
+    </rosparam>
+
+    <param name="pregrasp_distance" value="0.10" />
+    <param name="max_candidates" value="8" />
+    <param name="max_gripper_width" value="0.08" />
+    <param name="planning_time" value="8.0" />
+    <param name="velocity_scale" value="0.20" />
+    <param name="acceleration_scale" value="0.20" />
+    <param name="position_tolerance" value="0.03" />
+    <param name="orientation_tolerance" value="0.70" />
+  </node>
+
+  <node name="rviz" pkg="rviz" type="rviz"
+        args="-d $(find piper_with_gripper_moveit)/launch/moveit.rviz -f arm_base" />
+</launch>

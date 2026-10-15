@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://ros.org/wiki/xacro" name="arm_with_camera">
+
+  <!-- Piper -->
+  <!-- <xacro:include filename="$(find piper_description)/urdf/piper_description.xacro"/> -->
+  <xacro:include filename="$(find piper_description)/urdf/piper_description.xacro"/>
+
+  <!-- D435 -->
+  <xacro:include filename="$(find realsense2_description)/urdf/_d435.urdf.xacro"/>
+
+  <!-- 调用 D435 宏，并挂在机械臂末端 -->
+  <xacro:sensor_d435 parent="link6" name="camera" use_nominal_extrinsics="true" add_plug="true" use_mesh="true">
+    <origin xyz="-0.055 0 0.06" rpy="0 -1.5708 0"/>
+    <!-- quart "0 0.707 0 -0.707" -->
+  </xacro:sensor_d435>
+
+</robot>

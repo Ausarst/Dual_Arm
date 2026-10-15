@@ -1,0 +1,20 @@
+<launch>
+  <!-- 原始 URDF（含 virtual joint 和相机） -->
+  <param name="robot_description"
+       command="$(find xacro)/xacro $(find piper)/urdf/sim_arm_clean.urdf.xacro" />
+
+  <!-- 机器人状态发布，订阅合成话题 -->
+  <node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher" output="screen">
+    <remap from="/joint_states" to="/joint_states_hggd"/>
+  </node>
+    <!-- 静态 TF：将 arm_base 固定为世界原点（解决 arm_base 缺失问题） -->
+  <node pkg="tf2_ros" type="static_transform_publisher" name="arm_base_static"
+        args="0 0 0 0 0 0 world arm_base" />
+
+  <!-- 抓取处理节点 -->
+  <node name="grasp_sim_node" pkg="piper" type="grasp_sim_node.py" output="screen"/>
+
+  <!-- Rviz -->
+  <arg name="rviz_config" default="/home/smart/two_arm/src/piper/rviz/sim_rviz.rviz"/>
+  <node name="rviz" pkg="rviz" type="rviz" args="-d $(arg rviz_config)" required="true"/>
+</launch>

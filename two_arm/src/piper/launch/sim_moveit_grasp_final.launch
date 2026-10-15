@@ -1,0 +1,32 @@
+<launch>
+  <!-- 加载带相机的 URDF -->
+  <param name="robot_description"
+         command="$(find xacro)/xacro $(find piper)/urdf/sim_arm_clean.urdf.xacro" />
+
+  <!-- 静态 TF：world → arm_base（可根据实际底座方向调整 rpy） -->
+  <node pkg="tf2_ros" type="static_transform_publisher" name="world_to_arm_base"
+        args="0 0 0 0 0 0 world arm_base" />
+
+  <!-- 使用新生成的 MoveIt 配置 -->
+  <include file="$(find piper_with_gripper_moveit)/launch/move_group.launch">
+    <arg name="pipeline" value="ompl" />
+    <arg name="info" value="true" />
+  </include>
+
+  <!-- 将仿真关节状态转发给 MoveIt -->
+  <node name="joint_states_relay" pkg="topic_tools" type="relay"
+        args="/joint_states_hggd /joint_states" />
+
+  <!-- robot_state_publisher 发布 TF（从 URDF 和关节状态） -->
+  <node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher">
+    <remap from="/joint_states" to="/joint_states_hggd"/>
+  </node>
+
+  <!-- 仿真抓取节点（延迟启动，确保 move_group 就绪） -->
+  <node name="grasp_moveit_sim" pkg="piper" type="grasp_moveit_sim.py"
+        output="screen" launch-prefix="bash -c 'sleep 5; $0 $@'" />
+
+  <!-- Rviz（使用 MoveIt 自带配置，强制 fixed frame 为 arm_base） -->
+  <node name="rviz" pkg="rviz" type="rviz"
+        args="-d $(find piper_with_gripper_moveit)/launch/moveit.rviz -f arm_base" />
+</launch>

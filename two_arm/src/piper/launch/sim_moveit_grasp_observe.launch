@@ -1,0 +1,72 @@
+<launch>
+  <!--
+    单臂观察 + 抓取仿真 launch v2
+
+    典型用法：
+      roslaunch piper sim_moveit_grasp_observe.launch
+
+    如果 HGGD 节点和相机已经启动，并且 /trigger_inference 是 std_srvs/Trigger：
+      roslaunch piper sim_moveit_grasp_observe.launch trigger_hggd_after_observe:=true
+
+    如果你已经在别处加入了偏大的机器人身体碰撞模型：
+      add_robot_body:=false
+  -->
+
+  <arg name="auto_observe" default="true" />
+  <arg name="trigger_hggd_after_observe" default="false" />
+  <arg name="auto_scan_if_no_grasp" default="false" />
+  <arg name="add_robot_body" default="false" />
+
+  <!-- 加载带相机的 URDF -->
+  <param name="robot_description"
+         command="$(find xacro)/xacro $(find piper)/urdf/sim_arm_clean.urdf.xacro" />
+
+  <!-- 静态 TF：world → arm_base。当前保持为原配置；如侧装方向已修正，可在这里改 rpy。 -->
+  <node pkg="tf2_ros" type="static_transform_publisher" name="world_to_arm_base"
+        args="0 0 0 0 0 0 world arm_base" />
+
+  <!-- MoveIt move_group -->
+  <include file="$(find piper_with_gripper_moveit)/launch/move_group.launch">
+    <arg name="pipeline" value="ompl" />
+    <arg name="info" value="true" />
+  </include>
+
+  <!-- 将仿真关节状态转发给 MoveIt -->
+  <node name="joint_states_relay" pkg="topic_tools" type="relay"
+        args="/joint_states_hggd /joint_states" />
+
+  <!-- robot_state_publisher 发布 TF -->
+  <node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher">
+    <remap from="/joint_states" to="/joint_states_hggd"/>
+  </node>
+
+  <!-- v2 仿真抓取节点 -->
+  <node name="grasp_moveit_sim_v2" pkg="piper" type="grasp_moveit_sim_v2.py"
+        output="screen" launch-prefix="bash -c 'sleep 5; $0 $@'">
+    <param name="auto_observe" value="$(arg auto_observe)" />
+    <param name="trigger_hggd_after_observe" value="$(arg trigger_hggd_after_observe)" />
+    <param name="auto_scan_if_no_grasp" value="$(arg auto_scan_if_no_grasp)" />
+    <param name="add_robot_body" value="$(arg add_robot_body)" />
+
+    <!-- 默认下垂、抬起、看桌面姿态。这里是初始建议值，请在 RViz 中微调。 -->
+    <rosparam param="initial_joints">[0.0, 3.142, -2.967, 0.0, 0.0, 0.0]</rosparam>
+    <rosparam param="safe_lift_joints">[0.0, 2.65, -2.35, 0.0, 0.25, 0.0]</rosparam>
+    <rosparam param="look_table_joints">[0.0, 2.10, -1.85, 0.0, 0.65, 0.0]</rosparam>
+    <rosparam param="scan_joints_list">
+      [
+        [0.25, 2.10, -1.85, 0.0, 0.65, 0.0],
+        [-0.25, 2.10, -1.85, 0.0, 0.65, 0.0]
+      ]
+    </rosparam>
+
+    <param name="pregrasp_distance" value="0.10" />
+    <param name="max_candidates" value="8" />
+    <param name="max_gripper_width" value="0.08" />
+    <param name="planning_time" value="5.0" />
+    <param name="velocity_scale" value="0.20" />
+    <param name="acceleration_scale" value="0.20" />
+  </node>
+
+  <node name="rviz" pkg="rviz" type="rviz"
+        args="-d $(find piper_with_gripper_moveit)/launch/moveit.rviz -f arm_base" />
+</launch>
