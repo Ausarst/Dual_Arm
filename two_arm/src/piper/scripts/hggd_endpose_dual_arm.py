@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """ Dual arm grasp pose process & execution (per arm instance)
 
     Usage:

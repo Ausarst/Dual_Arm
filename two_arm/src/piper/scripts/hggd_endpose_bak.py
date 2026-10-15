@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """ /grasp_pose
     def pub_grasp_pose(self, pred_gg):
         self.pred_gg = pred_gg
