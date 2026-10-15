@@ -13,7 +13,7 @@
     <param name="robot_description"
         command="$(find xacro)/xacro $(find piper)/urdf/arm_with_camera.urdf.xacro" />
     <node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher" output="screen">
-      <remap from="joint_states" to="joint_states_single"/>
+      <remap from="joint_states" to="joint_states_hggd"/>
       <param name="tf_prefix" value="arm1"/>
     </node>
     <node name="fake_piper_node" pkg="piper" type="fake_piper_node.py" output="screen">
@@ -25,7 +25,7 @@
     <param name="robot_description"
         command="$(find xacro)/xacro $(find piper)/urdf/arm_with_camera.urdf.xacro" />
     <node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher" output="screen">
-      <remap from="joint_states" to="joint_states_single"/>
+      <remap from="joint_states" to="joint_states_hggd"/>
       <param name="tf_prefix" value="arm2"/>
     </node>
     <node name="fake_piper_node" pkg="piper" type="fake_piper_node.py" output="screen">

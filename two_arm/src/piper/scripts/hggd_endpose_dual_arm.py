@@ -432,7 +432,7 @@ class HGGDCallback:
             execution state
         """
         for action in action_flow:
-            if not input_signal(
+            if not safe_input_signal(
                 "[{}]: ".format(action_prefix)
                 + "\n"
                 + action["type"]
@@ -442,6 +442,7 @@ class HGGDCallback:
             ):
                 return False
             if action["type"] == "GRASP":
+                self.width = action["value"]  # virtual gripper preview follows pipeline
                 self.call_gripper_service(action["value"])
             if action["type"] in ["APOSE", "AJOINT"]:
                 self.arm_servo_pose(action["value"], repeat=True)
@@ -464,6 +465,16 @@ def input_signal(reminder: str = "Enter to contine", supple_txt: str = "[0:End, 
         rospy.sleep(0.2)
         exit(0)
     return a != "9"
+
+
+def safe_input_signal(reminder: str = "Enter to contine", supple_txt: str = "[0:End, 9:Retn] "):
+    """input_signal guarded against EOF (nohup / closed stdin):
+    abort the remaining actions instead of killing the node with EOFError"""
+    try:
+        return input_signal(reminder, supple_txt)
+    except EOFError:
+        rospy.logwarn("stdin closed (EOF), abort remaining actions but keep node alive")
+        return False
 
 
 if __name__ == '__main__':
