@@ -3,3 +3,6 @@ two_arm/devel/
 __pycache__/
 *.pyc
 *.egg-info/
+
+# backup archive残留, 不入库(HGGD.zip 152MB超GitHub单文件限制)
+*.zip
