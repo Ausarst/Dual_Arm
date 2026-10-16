@@ -54,6 +54,19 @@
 <!-- Be sure that since you remap the joint states in hggd_endpose.py, now you need both subscrib and publish two topics with prefix /arm1 & /arm2 -->
 <!-- Besides, for all script in name space, subscriber also add prefix, that means you need send two control pose to agile_armpose.py -->
 
+  <!-- Eye-in-hand cameras (driver + link6 mount bridge, see rs_camera_arm.launch):
+       arm1_cam on by default (physical camera mounted), enable arm2_cam:=true once installed,
+       mount values then need per-arm hand-eye calibration -->
+  <arg name="arm1_cam" default="true"/>
+  <arg name="arm2_cam" default="false"/>
+  <include if="$(arg arm1_cam)" file="$(find piper)/launch/rs_camera_arm.launch">
+    <arg name="camera" value="arm1_cam"/>
+    <arg name="parent_link" value="arm1/link6"/>
+  </include>
+  <include if="$(arg arm2_cam)" file="$(find piper)/launch/rs_camera_arm.launch">
+    <arg name="camera" value="arm2_cam"/>
+    <arg name="parent_link" value="arm2/link6"/>
+  </include>
 
   <!-- World base frame -->
   <node pkg="tf2_ros" type="static_transform_publisher" name="world_to_arm1_base"
