@@ -46,6 +46,31 @@ from scipy.spatial.transform import Rotation as SR
 from piper_msgs.srv import Gripper, GripperRequest
 from piper_msgs.msg import PosCmd
 
+# ================== HGGD位姿坐标系 与 link6工具坐标系 不一致的问题 ==================
+#
+# HGGD输出的抓取位姿坐标系（证据: customgraspnetAPI/utils/utils.py 的
+# batch_key_point_2_rotation, 旋转矩阵三列由关键点构造）:
+#   第0列 x = 接近轴(夹爪朝物体前进的方向, 构造时锚定相机光轴z)
+#   第1列 y = 开合轴(两指连线方向)
+#   第2列 z = 上方向
+#
+# 而机械臂URDF的工具坐标系(link6系, SDK笛卡尔命令即此系, 已实测两者恒等):
+#   +z = 工具轴, 手指沿z正方向伸出
+#       (证据: visual_joint7/8 的 origin 为 xyz"0 0 0.1358", 手指模型在z向偏移)
+#   +y = 手指开合方向 (joint7/joint8 轴向 ±y)
+#
+# 两个坐标系相差90°: HGGD的接近轴是它的x列, 工具的手指方向却是link6的+z。
+# 若直接把HGGD旋转当作link6姿态发送:
+#   - rviz里ghost夹爪模型会横着90°渲染(手指朝"上方向"列伸出)
+#   - 实机上夹爪会侧着90°撞向物体, 抓取必然失败
+#
+# 修正: TOOL_FIXUP = Ry(+90°), 使 旋转@FIXUP 满足
+#   工具+z -> HGGD第0列(接近轴), 工具+y -> HGGD第1列(开合轴)
+# 平行夹爪关于接近轴旋转180°对称, 故仅需这一个旋转; 若实机渲染方向相反,
+# 把 FIXUP 改为 Ry(-90°) 即可。
+# ==================================================================================
+TOOL_FIXUP = SR.from_euler('y', np.pi / 2)
+
 
 class HGGDCallback:
     def __init__(self):
@@ -228,8 +253,14 @@ class HGGDCallback:
         if self.pose_armbase is None:
             return
         p = self.pose_armbase.pose
+        rotation = SR.from_quat(
+            [p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w]
+        ).as_matrix()
 
-        # grasp target frame, same frame name as URDF link so rviz ghost gripper moves
+        # grasp target frame, same frame name as URDF link so rviz ghost gripper moves;
+        # 姿态取 HGGD旋转@TOOL_FIXUP(工具对齐), ghost夹爪的手指沿接近轴伸出,
+        # 与实机将收到的命令姿态一致
+        q_tool = (SR.from_matrix(rotation) * TOOL_FIXUP).as_quat()
         visual_grasp = geometry_msgs.msg.TransformStamped()
         visual_grasp.header.stamp = rospy.Time.now()
         visual_grasp.header.frame_id = self.arm_base_frame
@@ -237,21 +268,25 @@ class HGGDCallback:
         visual_grasp.transform.translation.x = p.position.x
         visual_grasp.transform.translation.y = p.position.y
         visual_grasp.transform.translation.z = p.position.z
-        visual_grasp.transform.rotation.x = p.orientation.x
-        visual_grasp.transform.rotation.y = p.orientation.y
-        visual_grasp.transform.rotation.z = p.orientation.z
-        visual_grasp.transform.rotation.w = p.orientation.w
+        visual_grasp.transform.rotation.x = q_tool[0]
+        visual_grasp.transform.rotation.y = q_tool[1]
+        visual_grasp.transform.rotation.z = q_tool[2]
+        visual_grasp.transform.rotation.w = q_tool[3]
 
-        # relay frame: retreat along grasp approach (-x) axis, for approach start / retreat
-        rotation = SR.from_quat(
-            [p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w]
-        ).as_matrix()
-        approach = rotation[:, 0]
+        # relay frame: 沿ghost系-z(即TOOL_FIXUP后的接近轴)后退relay_backdist。
+        #
+        # ================== 子帧平移坐标系的历史bug ==================
+        # TF子帧的translation必须表达在【父帧(grasp_base_visual)坐标系】中,
+        # 旧代码直接填了臂基系下的接近轴分量:
+        #   translation=[-d*approach[0], -d*approach[1], -d*approach[2]]  # 有误
+        # 该向量会被ghost姿态再旋转一次, 导致中继帧跑到错误方向(仿真中表现为
+        # 沿夹爪"上方"偏移)。工具对齐后ghost系的-z就是接近轴, 偏移恒为(0,0,-d)。
+        # =============================================================
         d = self.relay_backdist
         trans_origin2backward = self.posrot_trans(
             father_farme="%s/grasp_base_visual" % self.arm_ns,
             child_frame="%s/visual_backward" % self.arm_ns,
-            translation=[-d*approach[0], -d*approach[1], -d*approach[2]],
+            translation=[0.0, 0.0, -d],
             orientation=[0.0, 0.0, 0.0],
         )
 
@@ -271,13 +306,18 @@ class HGGDCallback:
         p = self.pose_armbase.pose
         quat = [p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w]
         rotation = SR.from_quat(quat).as_matrix()
+        # 位置: 沿HGGD接近轴(第0列)后退backdist, 在臂基系下计算
         approach = rotation[:, 0]
         pos = [
             p.position.x - backdist*approach[0],
             p.position.y - backdist*approach[1],
             p.position.z - backdist*approach[2],
         ]
-        euler = transformations.euler_from_quaternion(quat)
+        # 姿态: 必须发"工具对齐"后的旋转(HGGD系与link6系差90°, 见文件头TOOL_FIXUP说明),
+        # 否则实机夹爪会横着90°接触物体; 直接用HGGD四元数是错误的:
+        #   euler = transformations.euler_from_quaternion(quat)  # 有误
+        quat_tool = (SR.from_matrix(rotation) * TOOL_FIXUP).as_quat()
+        euler = transformations.euler_from_quaternion(quat_tool)
         return pos + list(euler)
 
     def check_workspace(self, name: str, pos_cmd: list) -> bool:

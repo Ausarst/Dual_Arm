@@ -14,7 +14,7 @@
                    payload carries "camera": cam_ns (same gate as the real HGGD)
         ~cam_frame default {cam_ns}_color_optical_frame, same as the script
         ~x ~y ~z   target position in arm base, default 0.40 0.00 0.25
-        ~roll ~pitch ~yaw   target orientation in arm base, default 0 1.483 0 (natural piper pose)
+        ~roll ~pitch ~yaw   目标即HGGD抓取系(列0=接近轴), 默认 0 -0.087 0(接近轴水平前伸,工具命令可达)
         ~width     gripper width, default 0.03
 """
 
@@ -38,7 +38,7 @@ def main():
                   rospy.get_param("~y", 0.00),
                   rospy.get_param("~z", 0.25)]
     target_rpy = [rospy.get_param("~roll", 0.0),
-                  rospy.get_param("~pitch", 1.483),  # ~85deg, natural piper pose
+                  rospy.get_param("~pitch", -0.087),  # 接近轴≈水平前伸: 工具对齐后命令=Ry(85°)已验证可达; 旧默认pitch85对应命令Ry(175°)实测piper不可达(j5顶限位)
                   rospy.get_param("~yaw", 0.0)]
     width = rospy.get_param("~width", 0.03)
 
@@ -77,14 +77,16 @@ def main():
     }]
     pub.publish(json.dumps({"camera": cam_ns, "grasps": grasps}))
 
-    # print expected values for comparison (approach axis = x column of R_des)
+    # print expected values for comparison; commanded orientation is TOOL aligned
+    # (HGGD grasp frame vs link6 tool frame differ by Ry(90), see hggd_endpose_dual_arm.py)
     approach = R_des[:, 0]
-    upper_cmd = (np.array(target_xyz) - 0.10 * approach).tolist() + target_rpy
+    upper_cmd = (np.array(target_xyz) - 0.10 * approach).tolist()
+    rpy_tool = SR.from_matrix(R_des @ SR.from_euler('y', np.pi / 2).as_matrix()).as_euler('xyz')
     rospy.loginfo("expected GRIP  pos_cmd: [%.4f, %.4f, %.4f, %.4f, %.4f, %.4f]",
                   target_xyz[0], target_xyz[1], target_xyz[2],
-                  target_rpy[0], target_rpy[1], target_rpy[2])
+                  rpy_tool[0], rpy_tool[1], rpy_tool[2])
     rospy.loginfo("expected UPPER pos_cmd (backdist 0.10): [%.4f, %.4f, %.4f, %.4f, %.4f, %.4f]",
-                  *upper_cmd)
+                  *upper_cmd, *rpy_tool)
     rospy.loginfo("expected gripper: ready=%.4f close=%.4f",
                   min(width + 0.02, 0.07), min(width, 0.07))
     rospy.sleep(1.0)
