@@ -54,19 +54,17 @@
 <!-- Be sure that since you remap the joint states in hggd_endpose.py, now you need both subscrib and publish two topics with prefix /arm1 & /arm2 -->
 <!-- Besides, for all script in name space, subscriber also add prefix, that means you need send two control pose to agile_armpose.py -->
 
-  <!-- Eye-in-hand cameras (driver + link6 mount bridge, see rs_camera_arm.launch):
-       arm1_cam on by default (physical camera mounted), enable arm2_cam:=true once installed,
-       mount values then need per-arm hand-eye calibration -->
-  <arg name="arm1_cam" default="true"/>
-  <arg name="arm2_cam" default="false"/>
-  <include if="$(arg arm1_cam)" file="$(find piper)/launch/rs_camera_arm.launch">
-    <arg name="camera" value="arm1_cam"/>
-    <arg name="parent_link" value="arm1/link6"/>
-  </include>
-  <include if="$(arg arm2_cam)" file="$(find piper)/launch/rs_camera_arm.launch">
-    <arg name="camera" value="arm2_cam"/>
-    <arg name="parent_link" value="arm2/link6"/>
-  </include>
+  <!-- Camera mount bridges ONLY: connect {cam}_link (driver tree root) into the arm tree.
+       The optical edges {cam}_link -> {cam}_color_optical_frame are published by the REAL
+       driver with factory calibration, never republish them here (identity stand-ins exist
+       only in 2arm_dryrun.launch where no driver runs).
+       Driver launched separately: rs_camera_hggd.launch camera:=arm1_cam
+       (rs_camera_arm.launch is the self-contained alternative, it already includes this
+       bridge, so do not double-publish when using it). -->
+  <node pkg="tf2_ros" type="static_transform_publisher" name="arm1_link6_to_arm1_cam_link"
+        args="-0.055 0 0.06 0 -1.5708 0 arm1/link6 arm1_cam_link" />
+  <node pkg="tf2_ros" type="static_transform_publisher" name="arm2_link6_to_arm2_cam_link"
+        args="-0.055 0 0.06 0 -1.5708 0 arm2/link6 arm2_cam_link" />
 
   <!-- World base frame -->
   <node pkg="tf2_ros" type="static_transform_publisher" name="world_to_arm1_base"
