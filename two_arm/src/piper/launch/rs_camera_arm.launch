@@ -1,0 +1,19 @@
+<launch>
+  <!-- Camera bringup bound to one arm:
+       - driver topics/frames renamed to {camera}/* and {camera}_* via rs_camera_hggd.launch
+       - mount bridge TF {parent_link} -> {camera}_link, values = hand-eye mount of the camera
+         on that arm's link6 (same numbers as arm_with_camera.urdf.xacro)
+       HGGD side matches via: rosservice call /trigger_inference/{camera}
+  -->
+  <arg name="camera" default="arm1_cam"/>
+  <arg name="parent_link" default="arm1/link6"/>
+  <arg name="mount_xyz" default="-0.055 0 0.06"/>
+  <arg name="mount_rpy" default="0 -1.5708 0"/>
+
+  <include file="$(find realsense2_camera)/launch/rs_camera_hggd.launch">
+    <arg name="camera" value="$(arg camera)"/>
+  </include>
+
+  <node pkg="tf2_ros" type="static_transform_publisher" name="$(arg camera)_mount_bridge"
+        args="$(arg mount_xyz) $(arg mount_rpy) $(arg parent_link) $(arg camera)_link" />
+</launch>

@@ -10,7 +10,9 @@
         rosrun piper fake_hggd_pose.py _arm_ns:=arm1 _x:=0.90           # out of workspace case
     Params (target is given in ARM BASE frame):
         ~arm_ns    arm namespace, default arm1
-        ~cam_frame default {arm_ns}/camera_color_optical_frame, same as the script
+        ~cam_ns    camera namespace, default {arm_ns}_cam, topic /{cam_ns}/hggd_pose_raw,
+                   payload carries "camera": cam_ns (same gate as the real HGGD)
+        ~cam_frame default {cam_ns}_color_optical_frame, same as the script
         ~x ~y ~z   target position in arm base, default 0.40 0.00 0.25
         ~roll ~pitch ~yaw   target orientation in arm base, default 0 1.483 0 (natural piper pose)
         ~width     gripper width, default 0.03
@@ -28,8 +30,9 @@ def main():
     # init first so that CLI _x:=0.90 style params reach get_param (uploaded in init_node)
     rospy.init_node("fake_hggd_pose", anonymous=True)
     arm_ns = rospy.get_param("~arm_ns", "arm1")
+    cam_ns = rospy.get_param("~cam_ns", "%s_cam" % arm_ns)
     cam_frame = rospy.get_param(
-        "~cam_frame", "%s/camera_color_optical_frame" % arm_ns)
+        "~cam_frame", "%s_color_optical_frame" % cam_ns)
     arm_base_frame = "%s/arm_base" % arm_ns
     target_xyz = [rospy.get_param("~x", 0.40),
                   rospy.get_param("~y", 0.00),
@@ -39,7 +42,7 @@ def main():
                   rospy.get_param("~yaw", 0.0)]
     width = rospy.get_param("~width", 0.03)
 
-    pub = rospy.Publisher("/hggd_pose_raw", String, queue_size=10, latch=True)
+    pub = rospy.Publisher("/%s/hggd_pose_raw" % cam_ns, String, queue_size=10, latch=True)
 
     buffer = tf2_ros.Buffer()
     tf2_ros.TransformListener(buffer)
@@ -72,7 +75,7 @@ def main():
         "translation": pos_cam.tolist(),
         "rotation": R_cam.tolist(),
     }]
-    pub.publish(json.dumps(grasps))
+    pub.publish(json.dumps({"camera": cam_ns, "grasps": grasps}))
 
     # print expected values for comparison (approach axis = x column of R_des)
     approach = R_des[:, 0]

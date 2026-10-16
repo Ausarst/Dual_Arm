@@ -10,14 +10,17 @@ import json
 bridge = CvBridge()
 
 class GetCamInfo:
-    def __init__(self):
-        self.d435_intrinsics = None 
-        self.get_depth = None 
+    def __init__(self, cam_ns="arm1_cam"):
+        # one instance per camera, topics resolved under the camera namespace
+        # (rs_camera_hggd.launch camera:=arm1_cam), identity travels with the data
+        self.cam_ns = cam_ns
+        self.d435_intrinsics = None
+        self.get_depth = None
         self.get_rgb = None
-        rospy.Subscriber("/camera/aligned_depth_to_color/image_raw", ROSImage, self.get_depth_image) 
-        # rospy.Subscriber("/camera/depth/image_rect_raw", ROSImage, get_depth_image) 
-        rospy.Subscriber("/camera/color/image_raw", ROSImage, self.get_rgb_image)
-        rospy.Subscriber("/camera/color/camera_info", CameraInfo, self.get_d435_intrinsics)
+        rospy.Subscriber("/%s/aligned_depth_to_color/image_raw" % cam_ns, ROSImage, self.get_depth_image)
+        # rospy.Subscriber("/%s/depth/image_rect_raw" % cam_ns, ROSImage, get_depth_image)
+        rospy.Subscriber("/%s/color/image_raw" % cam_ns, ROSImage, self.get_rgb_image)
+        rospy.Subscriber("/%s/color/camera_info" % cam_ns, CameraInfo, self.get_d435_intrinsics)
         
     def get_d435_intrinsics(self, cam_info):
         self.cam_info = cam_info
@@ -41,22 +44,24 @@ class GetCamInfo:
 
 
 class GraspPose:
-    def __init__(self):
-        # Subscribe camera topices and Publish grasp pose
-        # rospy.init_node('grasp_inference_node', anonymous=True) 
-        self.pub = rospy.Publisher('/hggd_pose_raw', String, queue_size=10)
+    def __init__(self, cam_ns="arm1_cam"):
+        # Publish grasp pose of THIS camera onto /{cam_ns}/hggd_pose_raw,
+        # camera namespace embedded in the json so receivers can gate on it
+        self.cam_ns = cam_ns
+        # rospy.init_node('grasp_inference_node', anonymous=True)
+        self.pub = rospy.Publisher('/%s/hggd_pose_raw' % cam_ns, String, queue_size=10)
 
     def pub_grasp_pose(self, pred_gg):
         self.pred_gg = pred_gg
-        grasps = [] 
-        for g in self.pred_gg: 
-            grasps.append({ 
-                "score": float(g.score), 
-                "width": float(g.width), 
-                "height": float(g.height), 
-                "depth": float(g.depth), 
-                "translation": g.translation.tolist(), 
-                "rotation": g.rotation.tolist() }) 
-        self.pub.publish(json.dumps(grasps)) 
+        grasps = []
+        for g in self.pred_gg:
+            grasps.append({
+                "score": float(g.score),
+                "width": float(g.width),
+                "height": float(g.height),
+                "depth": float(g.depth),
+                "translation": g.translation.tolist(),
+                "rotation": g.rotation.tolist() })
+        self.pub.publish(json.dumps({"camera": self.cam_ns, "grasps": grasps}))
 
 # while using a script class to import, you can int the node in the main script.

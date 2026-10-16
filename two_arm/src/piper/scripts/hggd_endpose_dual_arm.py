@@ -6,8 +6,10 @@
         (arm2 same with _arm_ns:=arm2, camera currently mounted on arm1)
 
     Subscribe:
-        /hggd_pose_raw                     HGGD grasp pose json, in camera optical frame
-        /{arm_ns}/joint_states_single      joint feedback from piper SDK
+        /{cam_ns}/hggd_pose_raw                HGGD grasp pose json of camera cam_ns
+                                               {"camera": cam_ns, "grasps": [...]},
+                                               gated: camera field must equal ~cam_ns
+        /{arm_ns}/joint_states_single          joint feedback from piper SDK
 
     Publish:
         /{arm_ns}/joint_states_hggd        joint states + virtual gripper joints for rviz
@@ -53,15 +55,20 @@ class HGGDCallback:
         rospy.init_node("hggd_pose_process", anonymous=True)
         # which arm this instance controls, all topics / frames / services prefixed by it
         self.arm_ns = rospy.get_param("~arm_ns", "arm1")
+        # camera namespace bound to this arm (convention: {arm_ns}_cam), used BOTH as
+        # the subscription topic /{cam_ns}/hggd_pose_raw and as the gate checking the
+        # "camera" field inside the json payload -- identity travels with the data
+        self.cam_ns = rospy.get_param("~cam_ns", "%s_cam" % self.arm_ns)
 
-        # camera frame the HGGD pose defined in:
-        # default use the URDF clone frame published by robot_state_publisher (on /tf_static),
-        # switch to driver frame (camera_color_optical_frame) once link6->camera_link bridge TF added
+        # camera frame the HGGD pose defined in: driver frame {cam_ns}_color_optical_frame,
+        # connected to the arm tree by the mount bridge TF (armX/link6 -> {cam_ns}_link,
+        # see rs_camera_arm.launch / 2arm_dryrun.launch)
         self.cam_frame = rospy.get_param(
-            "~cam_frame", "%s/camera_color_optical_frame" % self.arm_ns)
+            "~cam_frame", "%s_color_optical_frame" % self.cam_ns)
         self.arm_base_frame = "%s/arm_base" % self.arm_ns
 
-        rospy.Subscriber("/hggd_pose_raw", String, self.grasp_pose_cb, queue_size=10)
+        rospy.Subscriber("/%s/hggd_pose_raw" % self.cam_ns, String,
+                         self.grasp_pose_cb, queue_size=10)
         rospy.Subscriber("/%s/joint_states_single" % self.arm_ns,
                          JointState, self.visual_grasp_pub)
         self.joint_pub = rospy.Publisher(
@@ -120,12 +127,20 @@ class HGGDCallback:
         """
         Discribe:
             Subscribe expect gripper grasp pose from HGGD, pick the best score one,
-            transform from camera optical frame to arm base frame and store for pipeline
+            transform from camera optical frame to arm base frame and store for pipeline.
+            Gate: only process poses whose embedded camera namespace matches ~cam_ns,
+            mismatch (wrong wiring / foreign camera) is ignored -> no target.
 
         Args:
-            msg: /hggd_pose_raw, translation and rotation json data from HGGD
+            msg: /{cam_ns}/hggd_pose_raw, json {"camera": cam_ns, "grasps": [...]}
         """
-        grasps = json.loads(msg.data)
+        data = json.loads(msg.data)
+        cam_of_msg = data.get("camera") if isinstance(data, dict) else None
+        if cam_of_msg != self.cam_ns:
+            rospy.logwarn("ignore pose from camera '%s' (this instance expects '%s')",
+                          cam_of_msg, self.cam_ns)
+            return
+        grasps = data.get("grasps") or []
         if not grasps:
             rospy.logwarn("HGGD returned empty grasp list, skip")
             return
@@ -442,7 +457,7 @@ class HGGDCallback:
             ):
                 return False
             if action["type"] == "GRASP":
-                # self.width = action["value"]  # virtual gripper preview follows pipeline
+                self.width = action["value"]  # virtual gripper preview follows pipeline
                 self.call_gripper_service(action["value"])
             if action["type"] in ["APOSE", "AJOINT"]:
                 self.arm_servo_pose(action["value"], repeat=True)
@@ -465,16 +480,6 @@ def input_signal(reminder: str = "Enter to contine", supple_txt: str = "[0:End, 
         rospy.sleep(0.2)
         exit(0)
     return a != "9"
-
-
-# def safe_input_signal(reminder: str = "Enter to contine", supple_txt: str = "[0:End, 9:Retn] "):
-#     """input_signal guarded against EOF (nohup / closed stdin):
-#     abort the remaining actions instead of killing the node with EOFError"""
-#     try:
-#         return input_signal(reminder, supple_txt)
-#     except EOFError:
-#         rospy.logwarn("stdin closed (EOF), abort remaining actions but keep node alive")
-#         return False
 
 
 if __name__ == '__main__':

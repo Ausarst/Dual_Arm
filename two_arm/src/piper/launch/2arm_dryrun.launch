@@ -39,6 +39,14 @@
   <node pkg="tf2_ros" type="static_transform_publisher" name="world_to_arm2_base"
         args="0 -0.4 0 0 0 1.5708 world arm2/arm_base" />
 
+  <!-- fake camera tree for arm1_cam (real driver absent in dry-run):
+       mount bridge (same values as rs_camera_arm.launch) + identity stand-in for the
+       driver-internal optical edge, so {cam_ns}_color_optical_frame exists for transforms -->
+  <node pkg="tf2_ros" type="static_transform_publisher" name="arm1_link6_to_arm1_cam_link"
+        args="-0.055 0 0.06 0 -1.5708 0 arm1/link6 arm1_cam_link" />
+  <node pkg="tf2_ros" type="static_transform_publisher" name="arm1_cam_link_to_color_optical"
+        args="0 0 0 0 0 0 arm1_cam_link arm1_cam_color_optical_frame" />
+
   <arg name="rviz_config" default="$(find piper_description)/rviz/arm_camera.rviz"/>
   <node if="$(arg rviz)" name="rviz" pkg="rviz" type="rviz" args="-d $(arg rviz_config)" />
 </launch>

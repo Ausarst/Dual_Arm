@@ -61,6 +61,9 @@ parser.add_argument('--rotation-num', type=int, default=1)
 # others
 parser.add_argument('--random-seed', type=int, default=123, help='Random seed')
 
+parser.add_argument('--cam-ns', default='arm1_cam',
+                    help='camera ns: topics /{cam-ns}/..., pub /{cam-ns}/hggd_pose_raw, service /trigger_inference/{cam-ns}')
+
 args = parser.parse_args()
 
 
@@ -264,8 +267,8 @@ if __name__ == '__main__':
 
 
     rospy.init_node('cam_info_node', anonymous=True)
-    cam_info = GetCamInfo()
-    grasp_pub = GraspPose() 
+    cam_info = GetCamInfo(args.cam_ns)
+    grasp_pub = GraspPose(args.cam_ns)
     # wait cmaera 
     while (cam_info.d435_intrinsics is None or cam_info.get_depth is None or cam_info.get_rgb is None): 
         rospy.sleep(0.1)
@@ -322,7 +325,7 @@ if __name__ == '__main__':
 
 
     # wait for inference trigger
-    rospy.Service('trigger_inference', Trigger, handle_inference_service)
+    rospy.Service('/trigger_inference/' + args.cam_ns, Trigger, handle_inference_service)
     print("Waiting inference trigger...")
     while not rospy.is_shutdown():
 
