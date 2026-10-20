@@ -1,31 +1,31 @@
 #!/usr/bin/env python3
-""" Dual arm grasp pose process & execution (per arm instance)
+""" 双臂抓取位姿处理与执行 (每臂一个实例)
 
-    Usage:
+    用法:
         rosrun piper hggd_endpose_dual_arm.py _arm_ns:=arm1
-        (arm2 same with _arm_ns:=arm2, camera currently mounted on arm1)
+        (arm2 同理 _arm_ns:=arm2; 相机目前挂在 arm1)
 
-    Subscribe:
-        /{cam_ns}/hggd_pose_raw                HGGD grasp pose json of camera cam_ns
+    订阅:
+        /{cam_ns}/hggd_pose_raw                HGGD 抓取位姿 json, 属于相机 cam_ns
                                                {"camera": cam_ns, "grasps": [...]},
-                                               gated: camera field must equal ~cam_ns
-        /{arm_ns}/joint_states_single          joint feedback from piper SDK
+                                               门控: json内camera字段必须等于 ~cam_ns
+        /{arm_ns}/joint_states_single          piper SDK 的机械臂关节反馈
 
-    Publish:
-        /{arm_ns}/joint_states_hggd        joint states + virtual gripper joints for rviz
-        /{arm_ns}/pos_cmd                  cartesian pose cmd to piper SDK (x/y/z m, rpy rad)
+    发布:
+        /{arm_ns}/joint_states_hggd        关节 + 虚拟夹爪关节, 供 rviz 可视化
+        /{arm_ns}/pos_cmd                  发给 piper SDK 的笛卡尔末端命令 (x/y/z 米, rpy 弧度)
 
-    TF broadcast (all frames prefixed by arm_ns, 10Hz timer republish,
-                  so relay frames never expire and target switch refreshes automatically):
-        {arm_ns}/grasp_base_visual         expected grasp pose in arm base,
-                                           same name as URDF fixed frame to drive the ghost gripper STL
-        {arm_ns}/visual_backward           relay frame, retreat along grasp approach (-x) axis
+    TF 广播 (所有帧带 arm_ns 前缀, 10Hz Timer 重发,
+             因此中继帧不会过期, 切换目标时下一拍自动刷新):
+        {arm_ns}/grasp_base_visual         臂基系下的期望抓取位姿,
+                                           与 URDF fixed 帧同名, 以驱动 ghost 夹爪 STL
+        {arm_ns}/visual_backward           中继帧, 沿抓取接近轴(ghost系-z)后退
 
-    Service:
-        /{arm_ns}/gripper_srv              gripper open width, unit: meter [0, 0.07]
+    服务:
+        /{arm_ns}/gripper_srv              夹爪开合, 单位: 米 [0, 0.07]
 
-    Pipeline: numeric pose composition (no TF round trip for execution),
-              each action confirmed by keyboard before executing (input_signal).
+    执行流: 纯数值位姿组合(执行不依赖TF往返),
+            每个动作执行前需键盘确认 (input_signal)。
 """
 
 import rospy
@@ -49,7 +49,8 @@ from piper_msgs.msg import PosCmd
 # ================== HGGD位姿坐标系 与 link6工具坐标系 不一致的问题 ==================
 #
 # HGGD输出的抓取位姿坐标系（证据: customgraspnetAPI/utils/utils.py 的
-# batch_key_point_2_rotation, 旋转矩阵三列由关键点构造）:
+# batch_key_point_2_rotation, 旋转矩阵三列由关键点构造;
+# 同文件 plot_gripper_pro_max 的夹爪几何亦证: 手指与腕尾沿x, 开合沿y）:
 #   第0列 x = 接近轴(夹爪朝物体前进的方向, 构造时锚定相机光轴z)
 #   第1列 y = 开合轴(两指连线方向)
 #   第2列 z = 上方向
@@ -74,71 +75,70 @@ TOOL_FIXUP = SR.from_euler('y', np.pi / 2)
 
 class HGGDCallback:
     def __init__(self):
-        # init first: CLI _arm_ns:=x is uploaded to the param server by init_node,
-        # launch <param> is written there beforehand, so both paths converge
-        # into the same get_param call below
+        # 必须先 init_node: 命令行 _arm_ns:=x 由 init_node 上传参数服务器,
+        # launch <param> 则是启动前就已写入, 两条路径汇聚到下面同一个 get_param
         rospy.init_node("hggd_pose_process", anonymous=True)
-        # which arm this instance controls, all topics / frames / services prefixed by it
-        self.arm_ns = rospy.get_param("~arm_ns", "arm1")
-        # camera namespace bound to this arm (convention: {arm_ns}_cam), used BOTH as
-        # the subscription topic /{cam_ns}/hggd_pose_raw and as the gate checking the
-        # "camera" field inside the json payload -- identity travels with the data
-        self.cam_ns = rospy.get_param("~cam_ns", "%s_cam" % self.arm_ns)
 
-        # camera frame the HGGD pose defined in: driver frame {cam_ns}_color_optical_frame,
-        # connected to the arm tree by the mount bridge TF (armX/link6 -> {cam_ns}_link,
-        # see rs_camera_arm.launch / 2arm_dryrun.launch)
-        self.cam_frame = rospy.get_param(
-            "~cam_frame", "%s_color_optical_frame" % self.cam_ns)
+        # 本实例控制的机械臂id, 所有话题/坐标系/服务都以它为前缀
+        self.arm_ns = rospy.get_param("~arm_ns", "arm1")
+        # 本臂绑定的相机命名空间(约定: {arm_ns}_cam), 既用作订阅话题 /{cam_ns}/hggd_pose_raw,
+        # 也用作 json 载荷内 "camera" 字段的校验期望值 —— 身份随数据走, 参数只做校验
+        self.cam_ns = rospy.get_param("~cam_ns", "%s_cam" % self.arm_ns)
+        # HGGD 位姿所在的相机帧: 驱动帧 {cam_ns}_color_optical_frame,
+        # 经安装外参桥 TF (armX/link6 -> {cam_ns}_link) 接入臂树,
+        # 见 rs_camera_arm.launch / 2arm_dryrun.launch
+        self.cam_frame = rospy.get_param("~cam_frame", "%s_color_optical_frame" % self.cam_ns)
         self.arm_base_frame = "%s/arm_base" % self.arm_ns
 
-        rospy.Subscriber("/%s/hggd_pose_raw" % self.cam_ns, String,
-                         self.grasp_pose_cb, queue_size=10)
-        rospy.Subscriber("/%s/joint_states_single" % self.arm_ns,
-                         JointState, self.visual_grasp_pub)
-        self.joint_pub = rospy.Publisher(
-            "/%s/joint_states_hggd" % self.arm_ns, JointState, queue_size=10)
+        # 订阅
+        # HGGD期望抓取位姿回调
+        rospy.Subscriber("/%s/hggd_pose_raw" % self.cam_ns, String, self.grasp_pose_cb, queue_size=10)
+        # 订阅piper机械臂实时关节角，并添加虚拟关节visual_joint用于可视化
+        rospy.Subscriber("/%s/joint_states_single" % self.arm_ns, JointState, self.visual_grasp_pub)
 
-        # arm pose to piper
-        self.arm_pose_pub = rospy.Publisher(
-            "/%s/pos_cmd" % self.arm_ns, PosCmd, queue_size=1)
+        # 发布
+        # 融合机械臂回调和HGGD夹爪开合度进行发布，用于rviz可视化
+        self.joint_pub = rospy.Publisher("/%s/joint_states_hggd" % self.arm_ns, JointState, queue_size=10)
+        # 发给piper机械臂执行，PosCmd格式
+        self.arm_pose_pub = rospy.Publisher("/%s/pos_cmd" % self.arm_ns, PosCmd, queue_size=1)
 
-        # gripper close/open service
+        # 服务
+        # 夹爪开合服务
         rospy.wait_for_service("/%s/gripper_srv" % self.arm_ns)
         self.gripper_service = rospy.ServiceProxy(
             "/%s/gripper_srv" % self.arm_ns, Gripper)
 
-        # TF trans
+        # TF 查询与广播
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
         self.tf_broadcaster = tf2_ros.TransformBroadcaster()
 
         self.width = 0.0
-        self.pose_armbase = None  # PoseStamped of expected grasp in arm base
-        self.pose_ready = False   # set by hggd callback, consumed by main loop pipeline
+        self.pose_armbase = None  # 臂基系下的期望抓取位姿 (PoseStamped)
+        self.pose_ready = False   # 由 HGGD 回调置位, 主循环 pipeline 消费
 
-        # relay distance from grasp pose along approach axis
+        # 沿接近轴的中继后退距离
         self.relay_backdist = rospy.get_param("~relay_backdist", 0.10)
 
-        # conservative workspace check bounds in arm base frame (m), tune per piper spec
+        # 工作空间粗检界限(臂基系, 米), 保守默认值, 按piper规格调整
         self.ws_r_min = rospy.get_param("~ws_r_min", 0.10)
         self.ws_r_max = rospy.get_param("~ws_r_max", 0.60)
         self.ws_z_min = rospy.get_param("~ws_z_min", 0.00)
         self.ws_z_max = rospy.get_param("~ws_z_max", 0.50)
 
-        # republish grasp & relay frames at 10Hz: keep TF cache fresh for rviz,
-        # and new HGGD pose is picked up automatically on next tick
+        # 10Hz 重发抓取帧与中继帧: 保持 TF 缓存新鲜(rviz不丢失),
+        # 新的 HGGD 位姿在下一拍自动生效(切换目标免管理)
         self.tf_timer = rospy.Timer(rospy.Duration(0.1), self.broadcast_grasp_frames)
 
-### HGGD pose process
+### HGGD 位姿处理
     def visual_grasp_pub(self, msg):
         """
-        Discribe:
-            Add visual_joint7&8 to jointstate and publish to /{arm_ns}/joint_states_hggd,
-            then robotstatepublsher publish tf tree, for visualize expect gripper pose later
+        描述:
+            在关节反馈里加入虚拟关节 visual_joint7/8 后发布到 /{arm_ns}/joint_states_hggd,
+            供 robot_state_publisher 发布 tf 树, 用于后续可视化期望夹爪位姿
 
-        Args:
-            msg: /{arm_ns}/joint_states_single, realtime 6 joint angle from piper SDK
+        参数:
+            msg: /{arm_ns}/joint_states_single, piper SDK 的实时关节角
         """
         merged = JointState()
         merged.header.stamp = rospy.Time.now()
@@ -150,13 +150,13 @@ class HGGDCallback:
 
     def grasp_pose_cb(self, msg: String):
         """
-        Discribe:
-            Subscribe expect gripper grasp pose from HGGD, pick the best score one,
-            transform from camera optical frame to arm base frame and store for pipeline.
-            Gate: only process poses whose embedded camera namespace matches ~cam_ns,
-            mismatch (wrong wiring / foreign camera) is ignored -> no target.
+        描述:
+            订阅 HGGD 期望抓取位姿, 取置信度最高者,
+            从相机光学系变换到臂基系后存起来供 pipeline 使用。
+            门控: 仅处理 json 内 camera 命名空间与本实例 ~cam_ns 一致的位姿,
+            不一致(接线错误/别臂相机)则忽略 -> 无目标不运动。
 
-        Args:
+        参数:
             msg: /{cam_ns}/hggd_pose_raw, json {"camera": cam_ns, "grasps": [...]}
         """
         data = json.loads(msg.data)
@@ -203,7 +203,7 @@ class HGGDCallback:
         self.pose_ready = True
 ###
 
-### TF broadcast (timer driven, for rviz visualization only)
+### TF 广播 (Timer 驱动, 仅供 rviz 可视化, 执行不依赖它)
     def posrot_trans(
             self,
             father_farme: str,
@@ -212,17 +212,17 @@ class HGGDCallback:
             orientation: Union[np.ndarray, list]
             ):
         """
-        Discribe:
-            Convert a position and rotation vector to a TransformStamped message for broadcasting to the TF tree
+        描述:
+            把位置 + 旋转向量转为 TransformStamped 消息, 用于向 TF 树广播
 
-        Args:
-            father_frame: the name of the father frame of the transformation
-            child_frame: the name of the child frame of the transformation
-            translation: the translation vector of the child frame relative to the father frame
-            orientation: the rotation vector (axis-angle) of the child frame relative to the father frame
+        参数:
+            father_farme: 变换父帧名
+            child_frame: 变换子帧名
+            translation: 子帧相对父帧的平移向量(以父帧坐标表达!)
+            orientation: 子帧相对父帧的旋转向量(轴角)
 
-        Returns:
-            a TransformStamped message representing the transformation from the father frame to the child frame
+        返回:
+            表示父帧到子帧变换的 TransformStamped 消息
         """
         t = geometry_msgs.msg.TransformStamped()
         t.header.stamp = rospy.Time.now()
@@ -233,7 +233,7 @@ class HGGDCallback:
         t.transform.translation.y = translation[1]
         t.transform.translation.z = translation[2]
 
-        # axis-angle(direction cosine) to quaternion
+        # 轴角转四元数
         q = SR.from_rotvec(orientation).as_quat()
 
         t.transform.rotation.x = q[0]
@@ -245,10 +245,10 @@ class HGGDCallback:
 
     def broadcast_grasp_frames(self, event=None):
         """
-        Discribe:
-            Timer callback, publish grasp_base_visual (same name as URDF fixed frame,
-            so ghost gripper STL follows) and relay frames (visual_backward etc.)
-            at 10Hz. Execution does not depend on these, they are for rviz only.
+        描述:
+            Timer 回调, 以 10Hz 发布 grasp_base_visual(与 URDF fixed 帧同名,
+            因此 ghost 夹爪 STL 跟随)与中继帧(visual_backward 等)。
+            执行链不依赖这些帧, 它们只服务 rviz 显示。
         """
         if self.pose_armbase is None:
             return
@@ -257,7 +257,7 @@ class HGGDCallback:
             [p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w]
         ).as_matrix()
 
-        # grasp target frame, same frame name as URDF link so rviz ghost gripper moves;
+        # 抓取目标帧, 与 URDF link 同名以驱动 rviz ghost 夹爪;
         # 姿态取 HGGD旋转@TOOL_FIXUP(工具对齐), ghost夹爪的手指沿接近轴伸出,
         # 与实机将收到的命令姿态一致
         q_tool = (SR.from_matrix(rotation) * TOOL_FIXUP).as_quat()
@@ -273,7 +273,7 @@ class HGGDCallback:
         visual_grasp.transform.rotation.z = q_tool[2]
         visual_grasp.transform.rotation.w = q_tool[3]
 
-        # relay frame: 沿ghost系-z(即TOOL_FIXUP后的接近轴)后退relay_backdist。
+        # 中继帧: 沿ghost系-z(即TOOL_FIXUP后的接近轴)后退relay_backdist。
         #
         # ================== 子帧平移坐标系的历史bug ==================
         # TF子帧的translation必须表达在【父帧(grasp_base_visual)坐标系】中,
@@ -293,15 +293,16 @@ class HGGDCallback:
         self.tf_broadcaster.sendTransform([visual_grasp, trans_origin2backward])
 ###
 
-### target pos (numeric composition, execution never blocked by TF)
+### 目标位姿 (纯数值组合, 执行永不被 TF 阻塞)
     def grasp_poscmd(self, backdist: float = 0.0) -> list:
         """
-        Discribe:
-            Compose pos_cmd (x y z roll pitch yaw, m & rad) of the grasp pose moved
-            backdist along the approach (-x) axis, purely numeric from pose_armbase
+        描述:
+            数值组合 pos_cmd (x y z roll pitch yaw, 米/弧度):
+            抓取位姿沿接近轴后退 backdist 后的末端命令,
+            全部由 pose_armbase 直接计算, 不查 TF。
 
-        Args:
-            backdist: distance to retreat along approach axis, 0 means grasp pose itself
+        参数:
+            backdist: 沿接近轴后退的距离, 0 表示抓取位姿本身
         """
         p = self.pose_armbase.pose
         quat = [p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w]
@@ -322,9 +323,9 @@ class HGGDCallback:
 
     def check_workspace(self, name: str, pos_cmd: list) -> bool:
         """
-        Discribe:
-            Simple sanity check in arm base frame before sending to the real arm,
-            reject the action when target out of conservative workspace bounds
+        描述:
+            发送给真实机械臂前的臂基系简易检查,
+            目标超出保守工作空间界限时拒绝该动作
         """
         r = np.sqrt(pos_cmd[0]**2 + pos_cmd[1]**2)
         ok = (self.ws_r_min <= r <= self.ws_r_max) and (self.ws_z_min <= pos_cmd[2] <= self.ws_z_max)
@@ -335,13 +336,13 @@ class HGGDCallback:
 
     def fetch_tf_posequat(self, target_frame: str, source_frame: str, wait_block: bool = True):
         """
-        Discribe:
-            Debug helper: get transformation from source_frame to target_frame by TF
+        描述:
+            调试工具: 通过 TF 获取 source_frame 到 target_frame 的变换
 
-        Args:
-            target_frame: the name of the target frame
-            source_frame: the name of the source frame
-            wait_block: whether to block and wait for the transformation to be available
+        参数:
+            target_frame: 目标帧名
+            source_frame: 源帧名
+            wait_block: 是否阻塞等待变换可用
         """
         loop_rate_rece = rospy.Rate(2)
         while not rospy.is_shutdown():
@@ -365,14 +366,14 @@ class HGGDCallback:
             wait_block: bool = True,
     ):
         """
-        Discribe:
-            Debug helper: get transformation from source_frame to target_frame by TF,
-            and trans to PosCmd list for arm_servo_pose to execute, translation + euler
+        描述:
+            调试工具: 通过 TF 获取 source_frame 到 target_frame 的变换,
+            并转成 arm_servo_pose 可执行的 PosCmd 列表: 平移 + 欧拉角
 
-        Args:
-            target_frame: the name of the target frame
-            source_frame: the name of the source frame
-            wait_block: whether to block and wait for the transformation to be available
+        参数:
+            target_frame: 目标帧名
+            source_frame: 源帧名
+            wait_block: 是否阻塞等待变换可用
         """
         trans_msg = self.fetch_tf_posequat(target_frame, source_frame, wait_block)
         translation = [
@@ -391,13 +392,14 @@ class HGGDCallback:
         return pos_cmd
 ###
 
-### execute pos/gripper
+### 执行 位姿/夹爪
     def arm_servo_pose(self, act_pose: list, repeat=False):
         """
-        Discribe:
-            Arm absolute pose publish, x/y/z in m, roll/pitch/yaw in rad
+        描述:
+            发布机械臂绝对末端位姿, x/y/z 单位米, roll/pitch/yaw 单位弧度
 
-        :param act_pose: [x, y, z, roll, pitch, yaw]
+        参数:
+            act_pose: [x, y, z, roll, pitch, yaw]
         """
         pos_data = PosCmd()
         pos_data.x = act_pose[0]
@@ -414,15 +416,15 @@ class HGGDCallback:
             rospy.sleep(0.1)
             self.arm_pose_pub.publish(pos_data)
 
-    # close/open gripper service from piper
+    # piper 夹爪开合服务
     def call_gripper_service(self, gripper_opening, force_effort=2):
         """
-        Discribe:
-            Gripper close/open service from arm piper SDK
+        描述:
+            调用 piper SDK 的夹爪开合服务
 
-        Args:
-            gripper_opening: gripper opening distance, range: 0 - 0.07 m
-            force_effort: grasp force, range: 0.5 - 2 N
+        参数:
+            gripper_opening: 夹爪开合距离, 范围: 0 - 0.07 米
+            force_effort: 夹持力, 范围: 0.5 - 2 N
         """
         try:
             gri_cmd = GripperRequest()
@@ -436,12 +438,12 @@ class HGGDCallback:
             rospy.logerr("Service call failed: %s", e)
 ###
 
-### pipline
+### 抓取执行流
     def pipline(self):
         """
-        Discribe:
-            Grasp pipeline: numeric pose composition + manual step confirm execution.
-            upper(visual_backward) -> open gripper -> grasp pose -> close gripper -> retreat
+        描述:
+            抓取执行流: 数值位姿组合 + 逐步人工确认执行。
+            退避点(visual_backward) -> 开爪 -> 抓取位姿 -> 闭爪 -> 退回避点
         """
         if self.pose_armbase is None:
             rospy.logwarn("no grasp pose yet, skip pipeline")
@@ -451,12 +453,12 @@ class HGGDCallback:
         pose_endposupper = self.grasp_poscmd(backdist=d)
         pose_objgrip = self.grasp_poscmd(backdist=0.0)
 
-        # workspace check before touching the real arm
+        # 触碰真实机械臂前先做工作空间检查
         if not (self.check_workspace("upper", pose_endposupper)
                 and self.check_workspace("grip", pose_objgrip)):
             return
 
-        # gripper
+        # 夹爪开度
         grasp_open = 0.07
         grasp_close = min(self.width, grasp_open)
         grasp_ready = min(self.width + 0.02, grasp_open)
@@ -476,15 +478,15 @@ class HGGDCallback:
 
     def excute_graspactions(self, action_flow: list, action_prefix: str="grasp"):
         """
-        Discribe:
-            Execution information output and execution, each action confirmed by keyboard first
+        描述:
+            动作流的执行与信息输出, 每个动作先经键盘确认再执行
 
-        Args:
-            action_flow: multiple action list
-            action_prefix: description of action type
+        参数:
+            action_flow: 动作列表
+            action_prefix: 动作类型描述前缀
 
-        Returns:
-            execution state
+        返回:
+            执行状态
         """
         for action in action_flow:
             if not input_signal(
@@ -497,22 +499,22 @@ class HGGDCallback:
             ):
                 return False
             if action["type"] == "GRASP":
-                self.width = action["value"]  # virtual gripper preview follows pipeline
+                self.width = action["value"]  # 虚拟夹爪预览跟随执行流开合
                 self.call_gripper_service(action["value"])
             if action["type"] in ["APOSE", "AJOINT"]:
                 self.arm_servo_pose(action["value"], repeat=True)
         return True
 
-### user
+### 用户交互
 def input_signal(reminder: str = "Enter to contine", supple_txt: str = "[0:End, 9:Retn] "):
-    """Control function for executing one step
+    """单步执行控制函数
 
-    Args:
-        reminder: description of step. Defaults to "Enter to contine".
-        supple_txt: supplementary text to display before the reminder. Defaults to "[0:End, 9:Retn] ".
+    参数:
+        reminder: 该步骤的提示描述, 默认 "Enter to contine"。
+        supple_txt: 显示在提示前的补充说明, 默认 "[0:End, 9:Retn] "。
 
-    Returns:
-        whether to continue the execution flow, False if return 9, True if return other keys except 0, and exit if return 0.
+    返回:
+        是否继续执行流: 输入9返回False; 输入0退出节点; 其余(含直接回车)返回True。
     """
     a = input(supple_txt + reminder)
     if a == "0":
@@ -525,7 +527,7 @@ def input_signal(reminder: str = "Enter to contine", supple_txt: str = "[0:End, 
 if __name__ == '__main__':
     hggd = HGGDCallback()
     rospy.loginfo("[hggd_endpose_dual_arm] controlling arm: %s, camera frame: %s", hggd.arm_ns, hggd.cam_frame)
-    # main thread consumes grasp poses one by one, callbacks run in their own threads
+    # 主线程逐个消费抓取位姿, 各回调运行在自己的线程里
     rate = rospy.Rate(20)
     while not rospy.is_shutdown():
         if hggd.pose_ready:
