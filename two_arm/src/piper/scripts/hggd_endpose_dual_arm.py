@@ -118,7 +118,7 @@ class HGGDCallback:
         self.pose_ready = False   # 由 HGGD 回调置位, 主循环 pipeline 消费
 
         # 沿接近轴的中继后退距离
-        self.relay_backdist = rospy.get_param("~relay_backdist", 0.15)
+        self.relay_backdist = rospy.get_param("~relay_backdist", 0.1)
 
         # 工作空间粗检界限(臂基系, 米), 保守默认值, 按piper规格调整
         self.ws_r_min = rospy.get_param("~ws_r_min", 0.10)
