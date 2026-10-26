@@ -1,0 +1,28 @@
+<launch>
+  <arg name="can_port" default="can0" />
+  <arg name="auto_enable" default="true" />
+  <!-- <include file="$(find piper_description)/launch/piper_with_gripper/display_xacro_nogui.launch"/> -->
+  <!-- 启动机械臂节点 -->
+  <node name="piper_ctrl_single_node" pkg="piper" type="piper_ctrl_single_node.py" output="screen">
+    <param name="can_port" value="$(arg can_port)" />
+    <param name="auto_enable" value="$(arg auto_enable)" />
+    <param name="gripper_val_mutiple" value="2" />
+    <!-- <param name="rviz_ctrl_flag" value="true" /> -->
+    <param name="girpper_exist" value="true" />
+    <remap from="joint_ctrl_single" to="/joint_states" />
+  </node>
+  
+     <!-- Load cam&arm urdf -->
+    <param name="robot_description"
+        command="$(find xacro)/xacro $(find piper)/urdf/arm_with_camera.urdf.xacro" />
+
+    <!-- TF tree -->
+    <node 
+      name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher" output="screen">
+      <remap from="joint_states" to="joint_states_single"/>
+    </node>
+  
+  <!-- RViz -->
+  <arg name="rviz_config" default="$(find piper_description)/rviz/arm_camera.rviz"/>
+  <node name="rviz" pkg="rviz" type="rviz" args="-d $(arg rviz_config)" />
+</launch>

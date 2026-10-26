@@ -2,13 +2,15 @@
   <!-- CAN port of each arm, must match can_activate.sh binding (usb address) -->
   <arg name="arm1_can_port" default="can0"/>
   <arg name="arm2_can_port" default="can1"/>
+  <arg name="arm1_auto_enable" default="false"/>
+  <arg name="arm2_auto_enable" default="false"/>
 
   <!-- Arm1 -->
   <group ns="arm1">
     <!-- Arm initial -->
     <include file="$(find piper)/launch/all_start_multiple_piper.launch">
       <arg name="can_port" value="$(arg arm1_can_port)"/>
-      <arg name="auto_enable" value="true"/>
+      <arg name="auto_enable" value="$(arg arm1_auto_enable)"/>
       <arg name="gripper_val_mutiple" value="1"/>
       <arg name="girpper_exist" value="true"/>
     </include>
@@ -20,7 +22,7 @@
     <!-- TF tree -->
     <node 
       name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher" output="screen">
-      <remap from="joint_states" to="joint_states_single"/>
+      <remap from="joint_states" to="joint_states_hggd"/>
       <!-- <remap from="/joint_states" to="/joint_states_hggd"/> -->
       <param name="tf_prefix" value="arm1"/>
     </node>
@@ -31,7 +33,7 @@
   <group ns="arm2">
     <include file="$(find piper)/launch/all_start_multiple_piper.launch">
       <arg name="can_port" value="$(arg arm2_can_port)"/>
-      <arg name="auto_enable" value="true"/>
+      <arg name="auto_enable" value="$(arg arm2_auto_enable)"/>
       <arg name="gripper_val_mutiple" value="1"/>
       <arg name="girpper_exist" value="true"/>
     </include>
@@ -43,7 +45,7 @@
     <!-- TF tree -->
     <node 
       name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher" output="screen">
-      <remap from="joint_states" to="joint_states_single"/>
+      <remap from="joint_states" to="joint_states_hggd"/>
       <!-- <remap from="/joint_states" to="/joint_states_single"/> -->
       <!-- <remap from="/joint_states" to="/joint_states_hggd"/> -->
       <param name="tf_prefix" value="arm2"/>
@@ -70,7 +72,9 @@
   <node pkg="tf2_ros" type="static_transform_publisher" name="world_to_arm1_base"
         args="0 0 0 0 0 0 world arm1/arm_base" />
   <node pkg="tf2_ros" type="static_transform_publisher" name="world_to_arm2_base"
-        args="0 -0.4 0 0 0 1.5708 world arm2/arm_base" />
+        args="0 0.4 0 0 0 0 world arm2/arm_base" />
+  <!-- <node pkg="tf2_ros" type="static_transform_publisher" name="world_to_arm2_base"
+        args="0 -0.4 0 0 0 1.5708 world arm2/arm_base" /> -->
 
   <!-- RViz -->
   <arg name="rviz_config" default="$(find piper_description)/rviz/arm_camera.rviz"/>
