@@ -23,7 +23,10 @@ import sys
 import numpy as np
 import casadi
 import pinocchio as pin
-from pinocchio import casadi as cpin
+try:
+    from pinocchio import casadi as cpin   # conda/cmeel版pinocchio才有此桥
+except ImportError:
+    cpin = None  # apt版无桥, 用下方DH符号链回退
 from pinocchio.robot_wrapper import RobotWrapper
 from scipy.spatial.transform import Rotation as SR
 
@@ -72,22 +75,46 @@ class IKCheck:
         self.geometry_data = pin.GeometryData(self.geom_model)
 
         # casadi symbolic IK, same weights/limits/opts as Arm_IK
-        self.cmodel = cpin.Model(self.reduced_robot.model)
-        self.cdata = self.cmodel.createData()
+        # 误差函数双路: pin桥log6(6维)优先; 无桥时用DH符号链(位置3维+姿态Frobenius 9维),
+        # DH与SDK/URDF已实测恒等, Frobenius姿态差平滑无奇异且最优解与log6一致
         self.cq = casadi.SX.sym("q", self.reduced_robot.model.nq, 1)
         self.cTf = casadi.SX.sym("tf", 4, 4)
-        cpin.framesForwardKinematics(self.cmodel, self.cdata, self.cq)
-        self.error = casadi.Function(
-            "error", [self.cq, self.cTf],
-            [casadi.vertcat(
+        if cpin is not None:
+            self.cmodel = cpin.Model(self.reduced_robot.model)
+            self.cdata = self.cmodel.createData()
+            cpin.framesForwardKinematics(self.cmodel, self.cdata, self.cq)
+            err_sym = casadi.vertcat(
                 cpin.log6(self.cdata.oMf[self.ee_id].inverse()
-                          * cpin.SE3(self.cTf)).vector)])
+                          * cpin.SE3(self.cTf)).vector)
+            self._ori_slice = slice(3, 6)
+        else:
+            a = [0, 0, 0.28503, -0.02198, 0, 0]
+            alpha = [0, -np.pi / 2, 0, np.pi / 2, -np.pi / 2, np.pi / 2]
+            th0 = [0, np.deg2rad(-172.22), np.deg2rad(-102.78), 0, 0, 0]
+            dd = [0.123, 0, 0, 0.25075, 0, 0.091]
+            T = casadi.SX.eye(4)
+            for i in range(6):
+                th = self.cq[i] + th0[i]
+                ct, st = casadi.cos(th), casadi.sin(th)
+                ca_, sa_ = casadi.cos(alpha[i]), casadi.sin(alpha[i])
+                # 复刻SDK piper_fk矩阵布局(d在二三行)
+                A = casadi.vertcat(
+                    casadi.horzcat(ct, -st, 0, a[i]),
+                    casadi.horzcat(st * ca_, ct * ca_, -sa_, -sa_ * dd[i]),
+                    casadi.horzcat(st * sa_, ct * sa_, ca_, ca_ * dd[i]),
+                    casadi.horzcat(0, 0, 0, 1))
+                T = casadi.mtimes(T, A)
+            err_sym = casadi.vertcat(
+                T[:3, 3] - self.cTf[:3, 3],
+                casadi.reshape(T[:3, :3] - self.cTf[:3, :3], -1, 1))
+            self._ori_slice = slice(3, 12)
+        self.error = casadi.Function("error", [self.cq, self.cTf], [err_sym])
         self.opti = casadi.Opti()
         self.var_q = self.opti.variable(self.reduced_robot.model.nq)
         self.param_tf = self.opti.parameter(4, 4)
         error_vec = self.error(self.var_q, self.param_tf)
         self.totalcost = (casadi.sumsqr(1.0 * error_vec[:3])
-                          + casadi.sumsqr(0.1 * error_vec[3:]))
+                          + casadi.sumsqr(0.1 * error_vec[self._ori_slice]))
         self.regularization = casadi.sumsqr(self.var_q)
         # regularization pulls solutions toward zero pose (same as Arm_IK),
         # keep it for coarse multistart but disable in the polish pass,

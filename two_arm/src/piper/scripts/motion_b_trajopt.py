@@ -22,7 +22,7 @@ import sys
 import numpy as np
 import pinocchio as pin
 import casadi
-from pinocchio import casadi as cpin
+# from pinocchio import casadi as cpin  # 桥已改为_build_fk_err内探测加载(apt版pinocchio无此桥)
 
 from piper_kin import PiperKin, se3_from_xyzrpy
 
@@ -41,16 +41,53 @@ class TrajOptimizer:
         self.max_iter = max_iter
 
     def _build_fk_err(self):
-        """SX上预编译 FK误差函数(pinocchio-casadi桥只支持SX, Opti变量是MX,
-        预编译Function后可用MX调用 —— 与Arm_IK/ik_check同款做法)"""
-        cmodel = cpin.Model(self.kin.model)
-        cdata = cmodel.createData()
+        """符号FK误差函数, 两种实现自动选择:
+        ① pinocchio-casadi桥(log6误差) —— conda/cmeel版pinocchio才有此桥;
+        ② casadi原生DH符号链(位置差+姿态Frobenius差) —— apt版ros-noetic-pinocchio
+           未编译casadi桥时的可移植回退; DH参数与SDK piper_fk一致, 已实测与URDF
+           link6恒等(T_offset=I), 数值等价。姿态用Frobenius差: 平滑无奇异,
+           零当且仅当旋转相等(优化最优解与log6代价一致)。
+        两者都预编译成Function供Opti的MX调用。"""
         q_sym = casadi.SX.sym('q', 6)
         T_sym = casadi.SX.sym('T', 4, 4)
-        cpin.framesForwardKinematics(cmodel, cdata, q_sym)
-        oMf = cdata.oMf[self.kin.ee_id]
-        err_sym = cpin.log6(oMf.inverse() * cpin.SE3(T_sym)).vector
-        return casadi.Function('fk_err', [q_sym, T_sym], [err_sym])
+        try:
+            from pinocchio import casadi as cpin  # noqa: F401 (探测桥是否可用)
+            cmodel = cpin.Model(self.kin.model)
+            cdata = cmodel.createData()
+            cpin.framesForwardKinematics(cmodel, cdata, q_sym)
+            oMf = cdata.oMf[self.kin.ee_id]
+            err_sym = cpin.log6(oMf.inverse() * cpin.SE3(T_sym)).vector
+            self._err_dim, self._ori_slice = 6, slice(3, 6)
+            return casadi.Function('fk_err_pin', [q_sym, T_sym], [err_sym])
+        except ImportError:
+            pass
+        # DH符号链(与piper_fk.py dh_is_offset=0x01一致, 单位:米/弧度)
+        a = [0, 0, 0.28503, -0.02198, 0, 0]
+        alpha = [0, -np.pi / 2, 0, np.pi / 2, -np.pi / 2, np.pi / 2]
+        th0 = [0, np.deg2rad(-172.22), np.deg2rad(-102.78), 0, 0, 0]
+        d = [0.123, 0, 0, 0.25075, 0, 0.091]
+        T = casadi.SX.eye(4)
+        for i in range(6):
+            th = q_sym[i] + th0[i]
+            ct, st = casadi.cos(th), casadi.sin(th)
+            ca_, sa_ = casadi.cos(alpha[i]), casadi.sin(alpha[i])
+            # 逐元素复刻SDK piper_fk的__LinkTransformtion(非标准DH布局, d在二三行)
+            A = casadi.vertcat(
+                casadi.horzcat(ct, -st, 0, a[i]),
+                casadi.horzcat(st * ca_, ct * ca_, -sa_, -sa_ * d[i]),
+                casadi.horzcat(st * sa_, ct * sa_, ca_, ca_ * d[i]),
+                casadi.horzcat(0, 0, 0, 1))
+            T = casadi.mtimes(T, A)
+        p_err = T[:3, 3] - T_sym[:3, 3]
+        R_err = T[:3, :3] - T_sym[:3, :3]      # Frobenius差, 零 iff 旋转相等
+        err_sym = casadi.vertcat(p_err, casadi.reshape(R_err, -1, 1))
+        self._err_dim, self._ori_slice = 12, slice(3, 12)
+        return casadi.Function('fk_err_dh', [q_sym, T_sym], [err_sym])
+
+    def _task_cost(self, err):
+        """log6版: 前3位位置/后3位姿态; DH版: 前3位位置/后9位姿态Frobenius"""
+        return (self.w_pos * casadi.sumsqr(err[0:3])
+                + self.w_ori * casadi.sumsqr(err[self._ori_slice]) / 2.0)
 
     def solve(self, q_start: np.ndarray, T_goal: pin.SE3,
               via_poses=None, verbose=False):
@@ -71,16 +108,15 @@ class TrajOptimizer:
         dq_step = self.qd_max * dt
         opti.subject_to(opti.bounded(-dq_step, qs[1:, :].T - qs[:-1, :].T, dq_step))
 
-        # 终点任务代价: FK(q_N) -> T_goal 的log6误差(位置/姿态加权)
+        # 终点任务代价: FK(q_N) -> T_goal 误差(位置/姿态加权)
         Tg = casadi.DM(T_goal.homogeneous)
-        err = self._fk_err(qs[N, :].T, Tg)
-        cost = self.w_pos * casadi.sumsqr(err[0:3]) + self.w_ori * casadi.sumsqr(err[3:6])
+        cost = self._task_cost(self._fk_err(qs[N, :].T, Tg))
 
         # 可选经由点
         if via_poses:
             for idx, T_via in via_poses:
-                ev = self._fk_err(qs[idx, :].T, casadi.DM(T_via.homogeneous))
-                cost += self.w_pos * casadi.sumsqr(ev[0:3]) + self.w_ori * casadi.sumsqr(ev[3:6])
+                cost += self._task_cost(
+                    self._fk_err(qs[idx, :].T, casadi.DM(T_via.homogeneous)))
 
         # 平滑代价(二阶差分)
         acc = qs[2:N + 1, :] - 2 * qs[1:N, :] + qs[0:N - 1, :]

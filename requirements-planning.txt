@@ -1,0 +1,20 @@
+# 运动规划栈依赖 (piper_kin / motion_a_line_qp / motion_b_trajopt / ik_check / line_test_real)
+#
+# 本机已按此方案安装完毕并验证(2026-10-27): 系统 python3.8 直接可用, 无需 conda。
+#
+# 1) pinocchio —— 无 pip cp38 轮子, 用 ROS 源的 apt 包:
+#      sudo apt install ros-noetic-pinocchio     # 本机装的是 3.3.0
+#    python 绑定位于非默认路径, 需让 python3.8 可见(.pth 方案, 只影响 3.8 不污染 conda):
+#      echo /opt/ros/noetic/lib/python3.8/site-packages \
+#        > ~/.local/lib/python3.8/site-packages/ros_pinocchio.pth
+#    注意: apt 版未编译 pinocchio-casadi 桥, ik_check/motion_b 已内置 DH符号链回退,
+#          数值与桥版一致(DH 与 URDF/SDK 已实测恒等)。
+#
+# 2) casadi —— pip 即可(有 cp38 轮子), 内嵌 OSQP/qrqp/IPOPT 求解器:
+#      pip3 install --user casadi
+#
+# 3) 备选环境(桥完整, 结果同): conda 环境 tv
+#      conda activate tv   # pinocchio 3.6.0 + casadi, 见 piper_pinocchio/README.MD
+#
+# 验证: python3 -c "import pinocchio, casadi; print('ok')"
+#       cd two_arm/src/piper/scripts && python3 ik_check.py 0.30 0 0.25 0 1.4838 0

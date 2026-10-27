@@ -88,14 +88,15 @@ class LineQPPlanner:
         else:
             v_eff = self.v_lin
             t_total = length / v_eff + t_acc       # ≡ 2t_acc + (L-v·t_acc)/v (含两端ramp的精确总时长)
+        # 总时长以dt间隔切分n段时间
         n = max(int(np.ceil(t_total / self.dt)), 2)
+        # 插值t个时刻
         t = np.linspace(0.0, t_total, n + 1)
-        # 速度曲线: 满加速度爬坡封顶v_eff, 末端自t_total倒排的镜像减速沿,
-        # 对称梯形/三角, 与t_total公式逐项一致(加速d_acc+匀速L-2d_acc+减速d_acc=L),
-        # 末端零速到达
+        # 速度曲线: 满加速度爬坡封顶v_eff, 末端自t_total倒排的镜像减速沿, 对称梯形/三角, 与t_total公式逐项一致(加速d_acc+匀速L-2d_acc+减速d_acc=L), 末端零速到达
+        # prof就是每个插值t时刻对应的速度
         prof = np.minimum(np.minimum(self.a_lin * t, v_eff),
                           self.a_lin * (t_total - t))
-        # 梯形数值积分得每tick位移比例, 归一化消离散化残差
+        # ds输出以dt为间隔的位移增量序列，Δt*平均速度v/总长度（归一化）
         ds = np.diff(t) * 0.5 * (prof[:-1] + prof[1:]) / length
         ds = ds / ds.sum()
         return ds
@@ -111,6 +112,7 @@ class LineQPPlanner:
         # 参考路径: 位置直线 + 姿态log插值
         p0, p1 = T0.translation, T1.translation
         R0, R1 = T0.rotation, T1.rotation
+        # w_rot旋转差
         w_rot = pin.log3(R0.T @ R1)
         length = float(np.linalg.norm(p1 - p0))
         ds = self._trapezoid_s(length)
@@ -119,8 +121,11 @@ class LineQPPlanner:
         dts = []
         s = 0.0
         max_dev = 0.0
+        # 计算ds每个k时刻需要到达的位姿
         for k in range(len(ds)):
+            # s累计自增位移
             s += ds[k]
+            # 插值位姿ref按原始位姿乘归一化后的累计自增位移s计算
             T_ref = pin.SE3(R0 @ pin.exp3(s * w_rot), p0 + s * (p1 - p0))
 
             # 内层迭代: 单次QP受限幅/阻尼约束不一定追平参考, 逐次迭代到收敛(标准做法)
