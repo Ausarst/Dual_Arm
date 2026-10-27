@@ -44,13 +44,14 @@ class LineQPPlanner:
         self.track_ori_tol = track_ori_tol
         self.inner_iter = inner_iter   # 每航点QP内层迭代次数
 
-        # 一次性构建参数化QP: min 0.5·ΔqᵀPΔq + qᵀΔq  s.t. lbx≤Δq≤ubx(关节限位), |Δq|≤lim(限速)
-        #   P = JᵀJ + εI,  q = −Jᵀe   (即 min ‖JΔq−e‖²+ε‖Δq‖²)
+        # 待执行J·Δq逼近当前与期望位姿残差e + 关节角Δq最小变化 = min ‖J·Δq − e‖² + ε‖Δq‖² = min Δqᵀ(JᵀJ + εI)Δq − 2(Jᵀe)ᵀΔq + 常数项(eᵀe) -> mim xᵀPx + 2qvᵀx，I为单位阵，常数项(eᵀe)取决于插值密度
+        # s.t. lbx≤Δq≤ubx(关节限位), |Δq|≤lim(限速)
         # 求解器: casadi内嵌OSQP(conic), 不可用则回退qrqp
         x = casadi.SX.sym('dq', 6)
         P = casadi.SX.sym('P', 6, 6)
         qv = casadi.SX.sym('q', 6)
         f = 0.5 * casadi.dot(x, P @ x) + casadi.dot(qv, x)
+        # prob导入参数：决策变量x，参数向量p（平铺成一维），目标函数f，约束函数g（对变量x约束即可）
         prob = {'x': x, 'p': casadi.vertcat(casadi.reshape(P, -1, 1), qv),
                 'f': f, 'g': x}
         try:
@@ -81,19 +82,20 @@ class LineQPPlanner:
             return np.array([1.0])
         t_acc = self.v_lin / self.a_lin
         s_acc = 0.5 * self.a_lin * t_acc**2 / length
-        if 2 * s_acc >= 1.0:  # 三角profile
-            s_acc = 0.5
-            v_eff = np.sqrt(length * self.a_lin)
-            t_total = 2 * (s_acc * length) / (0.5 * v_eff)
+        if 2 * s_acc >= 1.0:  # 路径过短, 加速+减速即占满全程: 三角profile
+            v_eff = np.sqrt(length * self.a_lin)   # 半程可达峰值 v²=2a·(L/2)
+            t_total = 2 * length / v_eff           # 前半加速后半减速, 平均速度v_eff/2
         else:
             v_eff = self.v_lin
-            t_total = length / v_eff + t_acc
+            t_total = length / v_eff + t_acc       # ≡ 2t_acc + (L-v·t_acc)/v (含两端ramp的精确总时长)
         n = max(int(np.ceil(t_total / self.dt)), 2)
-        s = np.linspace(0.0, 1.0, n + 1)
-        # 梯形: 对s匀加速-匀速-匀减速重参数化
         t = np.linspace(0.0, t_total, n + 1)
-        prof = np.clip(0.5 * (t / t_acc) * self.a_lin * t_acc / max(v_eff, 1e-9), 0, 1) * v_eff
-        # 简化实现: 用累计速度积分归一
+        # 速度曲线: 满加速度爬坡封顶v_eff, 末端自t_total倒排的镜像减速沿,
+        # 对称梯形/三角, 与t_total公式逐项一致(加速d_acc+匀速L-2d_acc+减速d_acc=L),
+        # 末端零速到达
+        prof = np.minimum(np.minimum(self.a_lin * t, v_eff),
+                          self.a_lin * (t_total - t))
+        # 梯形数值积分得每tick位移比例, 归一化消离散化残差
         ds = np.diff(t) * 0.5 * (prof[:-1] + prof[1:]) / length
         ds = ds / ds.sum()
         return ds
